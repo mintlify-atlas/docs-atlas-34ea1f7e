@@ -1,0 +1,123 @@
+---
+title: base_eval.py
+description: Evaluate base language models
+---
+
+Unified evaluation script for base models. Supports CORE metric, bits-per-byte evaluation, and sampling.
+
+## Usage
+
+```bash
+# Evaluate a HuggingFace model (e.g. GPT-2 124M) using 8 GPUs
+torchrun --nproc_per_node=8 -m scripts.base_eval --hf-path openai-community/gpt2
+
+# Evaluate a nanochat model (e.g. d24) using 8 GPUs
+torchrun --nproc_per_node=8 -m scripts.base_eval --model-tag d24 --device-batch-size=16
+
+# Quick/approximate evaluation using a single GPU
+python -m scripts.base_eval --model-tag d24 --device-batch-size=16 \
+  --max-per-task=100 --split-tokens=524288
+```
+
+## Parameters
+
+### Evaluation Modes
+
+<ParamField path="--eval" type="str" default="core,bpb,sample">
+  Comma-separated evaluations to run:
+  - `core` - CORE metric (accuracy on ICL tasks)
+  - `bpb` - Bits per byte on train/val splits
+  - `sample` - Generate samples from the model
+  
+  Default is all three.
+</ParamField>
+
+### Model Selection
+
+<ParamField path="--hf-path" type="str" default="None">
+  HuggingFace model path (e.g. `openai-community/gpt2-xl`). Use this to evaluate external models.
+</ParamField>
+
+<ParamField path="--model-tag" type="str" default="None">
+  Nanochat model tag to identify the checkpoint directory (e.g. `d24`).
+</ParamField>
+
+<ParamField path="--step" type="int" default="None">
+  Model step to load. If not specified, loads the last checkpoint.
+</ParamField>
+
+### CORE Evaluation
+
+<ParamField path="--max-per-task" type="int" default="-1">
+  Maximum examples per CORE task. `-1` = evaluate on all examples.
+</ParamField>
+
+### BPB Evaluation
+
+<ParamField path="--device-batch-size" type="int" default="32">
+  Per-device batch size for bits-per-byte evaluation.
+</ParamField>
+
+<ParamField path="--split-tokens" type="int" default="20971520">
+  Number of tokens to evaluate per split for bits-per-byte (default: 40*524288).
+</ParamField>
+
+### Runtime
+
+<ParamField path="--device-type" type="str" default="">
+  Device type: `cuda`, `cpu`, or `mps`. Empty string enables autodetection.
+</ParamField>
+
+## Examples
+
+### Evaluate CORE Only
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.base_eval \
+  --model-tag d24 \
+  --eval core
+```
+
+### Quick CORE Evaluation (100 examples per task)
+
+```bash
+python -m scripts.base_eval \
+  --model-tag d24 \
+  --eval core \
+  --max-per-task=100
+```
+
+### Evaluate Bits-Per-Byte Only
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.base_eval \
+  --model-tag d24 \
+  --eval bpb \
+  --split-tokens=10485760
+```
+
+### Evaluate HuggingFace Model
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.base_eval \
+  --hf-path openai-community/gpt2 \
+  --eval core,bpb
+```
+
+## Output
+
+Results are written to:
+- **CORE results**: `{base_dir}/base_eval/{model_slug}.csv`
+- **Console output**: Summary statistics for all evaluations
+- **Report**: Logged to nanochat report system
+
+## CORE Metric
+
+The CORE metric is the mean centered accuracy across all in-context learning tasks:
+
+```
+centered_accuracy = (accuracy - random_baseline) / (1.0 - random_baseline)
+core_metric = mean(centered_accuracy for all tasks)
+```
+
+This ensures the metric ranges from 0 (random performance) to 1 (perfect performance).

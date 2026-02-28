@@ -1,0 +1,96 @@
+---
+title: Introduction
+description: Train your own GPT-2 for under $100 in just 3 hours
+---
+
+# Welcome to nanochat
+
+nanochat is the simplest experimental harness for training large language models (LLMs). It's designed to run on a single GPU node with minimal, hackable code that covers all major LLM stages including tokenization, pretraining, finetuning, evaluation, inference, and a chat UI.
+
+<Note>
+Train your own GPT-2 capability LLM (which cost ~$43,000 to train in 2019) for only **$72** (~3 hours of 8xH100 GPU node) and then talk to it in a familiar ChatGPT-like web UI. On a spot instance, the total cost can be closer to **~$20**.
+</Note>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="One Complexity Dial" icon="sliders">
+    Set a single `--depth` parameter (number of transformer layers) and all other hyperparameters are calculated automatically in an optimal way.
+  </Card>
+  
+  <Card title="Complete Pipeline" icon="route">
+    Covers tokenization, pretraining, supervised fine-tuning (SFT), reinforcement learning (RL), evaluation, and chat UI - all in one repo.
+  </Card>
+  
+  <Card title="Minimal & Hackable" icon="code">
+    Clean, readable PyTorch code with no giant configuration objects or if-then-else monsters. Designed to be maximally forkable.
+  </Card>
+  
+  <Card title="Compute Optimal" icon="gauge-high">
+    Automatically trains compute-optimal models at various sizes by sweeping the depth parameter - no manual hyperparameter tuning needed.
+  </Card>
+</CardGroup>
+
+## The Complete Pipeline
+
+nanochat guides you through the entire journey of creating a ChatGPT-like model:
+
+<Steps>
+  <Step title="Tokenization">
+    Train a custom BPE tokenizer with vocab size 32,768 on ~2B characters of data
+  </Step>
+  
+  <Step title="Pretraining">
+    Train the base transformer model on 10B tokens using distributed training across 8 GPUs
+  </Step>
+  
+  <Step title="Supervised Fine-Tuning (SFT)">
+    Teach the model conversation patterns, tool use, and multiple choice through supervised learning
+  </Step>
+  
+  <Step title="Reinforcement Learning (RL)">
+    Further align the model through reinforcement learning techniques (optional)
+  </Step>
+  
+  <Step title="Chat & Evaluate">
+    Talk to your model via CLI or web UI, and evaluate it on benchmarks like DCLM CORE, ARC, MMLU, and GSM8K
+  </Step>
+</Steps>
+
+## What You'll Build
+
+By following the quickstart, you'll train a **GPT-2 grade capability model** (4e19 FLOPs) that can:
+
+- Write stories and poems
+- Answer questions about the world
+- Engage in conversational dialogue
+- Use tools and execute Python code
+- Handle multiple choice questions
+
+The model is comparable to a "kindergartener" in capability - it has basic language understanding and generation abilities, perfect for learning and experimentation.
+
+## Time-to-GPT-2 Leaderboard
+
+nanochat maintains a leaderboard for "GPT-2 speedrun" - the wall-clock time required to train a model to GPT-2 grade capability (DCLM CORE score > 0.256525) on an 8xH100 GPU node:
+
+| # | Time | Val BPB | CORE Score | Description |
+|---|------|---------|------------|-------------|
+| 0 | 168 hours | - | 0.2565 | Original OpenAI GPT-2 (2019) |
+| 1 | 3.04h | 0.74833 | 0.2585 | d24 baseline, slightly overtrained |
+| 2 | 2.91h | 0.74504 | 0.2578 | d26 slightly undertrained + fp8 |
+| 3 | **2.76h** | 0.74645 | 0.2602 | Bump total batch size to 1M tokens |
+
+In 2019, training GPT-2 cost approximately **$43,000**. Thanks to 7 years of advances across the stack, we can now achieve the same capability for well below $100.
+
+## Ready to Start?
+
+<Card title="Quickstart" icon="rocket" href="/quickstart">
+  Train your own GPT-2 in 3 hours and start chatting with it
+</Card>
+
+## Community & Support
+
+For questions about the repo:
+- Use [DeepWiki](https://deepwiki.com/karpathy/nanochat) to ask questions about the codebase
+- Join the [#nanochat](https://discord.com/channels/1020383067459821711/1427295580895314031) channel on Discord
+- Check the [Discussions tab](https://github.com/karpathy/nanochat/discussions) on GitHub

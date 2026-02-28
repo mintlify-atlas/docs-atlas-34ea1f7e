@@ -1,0 +1,184 @@
+---
+title: GPT
+description: GPT transformer model implementation with modern architecture features
+---
+
+## Overview
+
+The `GPT` class implements a decoder-only transformer model with several modern improvements over the original GPT architecture.
+
+## GPTConfig
+
+Configuration dataclass for the GPT model.
+
+<ParamField path="sequence_len" type="int" default="2048">
+  Maximum context length for the model
+</ParamField>
+
+<ParamField path="vocab_size" type="int" default="32768">
+  Size of the vocabulary (typically 2^15)
+</ParamField>
+
+<ParamField path="n_layer" type="int" default="12">
+  Number of transformer layers (depth). This is the primary complexity dial.
+</ParamField>
+
+<ParamField path="n_head" type="int" default="6">
+  Number of query attention heads
+</ParamField>
+
+<ParamField path="n_kv_head" type="int" default="6">
+  Number of key/value heads for Group-Query Attention (GQA). Set equal to `n_head` for multi-head attention, or less for GQA.
+</ParamField>
+
+<ParamField path="n_embd" type="int" default="768">
+  Model embedding dimension (width). Typically calculated as `depth * aspect_ratio`.
+</ParamField>
+
+<ParamField path="window_pattern" type="str" default="SSSL">
+  Sliding window attention pattern tiled across layers:
+  - `L` = Long (full context)
+  - `S` = Short (half context)
+  - Final layer always uses full context
+  
+  Examples: `"L"` (all full), `"SL"` (alternating), `"SSSL"` (two short, two long)
+</ParamField>
+
+## GPT Class
+
+```python
+from nanochat.gpt import GPT, GPTConfig
+
+# Create a model
+config = GPTConfig(
+    n_layer=12,
+    n_head=6,
+    n_embd=768,
+    vocab_size=32768,
+    sequence_len=2048
+)
+model = GPT(config)
+```
+
+### Architecture Features
+
+The nanochat GPT implementation includes several modern improvements:
+
+<CardGroup cols={2}>
+  <Card title="Rotary Embeddings" icon="rotate">
+    RoPE for relative positional encoding (no learned positional embeddings)
+  </Card>
+  <Card title="QK Normalization" icon="layer-group">
+    Normalizes queries and keys for stable attention
+  </Card>
+  <Card title="Untied Weights" icon="unlink">
+    Separate token embedding and language model head weights
+  </Card>
+  <Card title="ReLU² Activation" icon="square-root-alt">
+    Squared ReLU activation in MLP layers
+  </Card>
+  <Card title="Group-Query Attention" icon="users">
+    GQA support for efficient inference with KV cache
+  </Card>
+  <Card title="Flash Attention 3" icon="bolt">
+    Automatic FA3 on Hopper+ GPUs, SDPA fallback elsewhere
+  </Card>
+  <Card title="Sliding Window" icon="window">
+    Configurable attention window patterns per layer
+  </Card>
+  <Card title="No Bias Terms" icon="ban">
+    All linear layers use bias=False
+  </Card>
+</CardGroup>
+
+### Forward Pass
+
+```python
+# Training forward pass
+logits, loss = model(input_ids, targets=target_ids)
+
+# Inference forward pass
+logits, _ = model(input_ids)
+```
+
+<ParamField path="idx" type="torch.Tensor" required>
+  Input token indices of shape `(B, T)` where B is batch size and T is sequence length
+</ParamField>
+
+<ParamField path="targets" type="torch.Tensor">
+  Target token indices for computing loss. If provided, returns `(logits, loss)`, otherwise `(logits, None)`
+</ParamField>
+
+<ParamField path="kv_cache" type="dict">
+  Key-value cache for efficient autoregressive generation. Used by the Engine class.
+</ParamField>
+
+<ResponseField name="logits" type="torch.Tensor">
+  Output logits of shape `(B, T, vocab_size)`
+</ResponseField>
+
+<ResponseField name="loss" type="torch.Tensor">
+  Cross-entropy loss if targets provided, otherwise None
+</ResponseField>
+
+### Optimizer Configuration
+
+The model provides a `configure_optimizers()` method that groups parameters for the MuonAdamW optimizer:
+
+```python
+optimizer = model.configure_optimizers(
+    weight_decay=0.2,
+    embedding_lr=0.3,
+    unembedding_lr=0.004,
+    matrix_lr=0.02,
+    scalar_lr=0.5,
+    device_type="cuda"
+)
+```
+
+Parameters are grouped into:
+- **Muon group**: Weight matrices (Muon optimizer)
+- **Adam embedding**: Token embeddings (AdamW)
+- **Adam unembedding**: Language model head (AdamW)
+- **Adam scalar**: Scalar parameters like gates (AdamW)
+
+## Helper Functions
+
+### norm(x)
+
+Purely functional RMSNorm with no learnable parameters:
+
+```python
+from nanochat.gpt import norm
+
+normalized = norm(x)  # RMSNorm over last dimension
+```
+
+### apply_rotary_emb(x, cos, sin)
+
+Applies rotary position embeddings:
+
+```python
+from nanochat.gpt import apply_rotary_emb
+
+q_rotated = apply_rotary_emb(q, cos, sin)
+k_rotated = apply_rotary_emb(k, cos, sin)
+```
+
+### has_ve(layer_idx, n_layer)
+
+Determines if a layer should have Value Embedding:
+
+```python
+from nanochat.gpt import has_ve
+
+if has_ve(layer_idx, n_layer):
+    # Layer uses value embedding
+    pass
+```
+
+## See Also
+
+- [GPT Model Architecture](/architecture/gpt-model) - Detailed architecture overview
+- [Flash Attention](/architecture/flash-attention) - Flash Attention 3 integration
+- [Optimizer](/api/optim) - MuonAdamW optimizer details

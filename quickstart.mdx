@@ -1,80 +1,311 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Train and talk to your own GPT-2 in just 3 hours
 ---
 
-## Get started in three steps
+# Train Your Own GPT-2
 
-Get your documentation site running locally and make your first customization.
+This guide walks you through training a GPT-2 capability LLM from scratch and talking to it via a ChatGPT-like web UI. The entire process takes approximately **3 hours** on an 8xH100 GPU node.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+### Hardware Requirements
+
+<Tabs>
+  <Tab title="8xH100 GPU Node (Recommended)">
+    **Optimal setup for the speedrun:**
+    - 8x NVIDIA H100 GPUs (80GB VRAM each)
+    - Training time: ~2.76 hours
+    - Cost: ~$72 (or ~$20 on spot instances)
+    - Cloud providers: [Lambda](https://lambda.ai/service/gpu-cloud), AWS, GCP, Azure
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    <Note>
+    The code also runs on 8xA100 GPUs (Ampere), but will take a bit longer.
+    </Note>
+  </Tab>
+  
+  <Tab title="Single GPU">
+    **Budget option:**
+    - Any single GPU with 80GB VRAM
+    - Training time: ~8x longer (24 hours)
+    - Code automatically switches to gradient accumulation
+    - No code changes needed - just omit `torchrun`
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    <Warning>
+    If your GPU has less than 80GB VRAM, you'll need to reduce `--device-batch-size` (from default 32 to 16, 8, 4, 2, or 1) to avoid OOM errors.
+    </Warning>
+  </Tab>
+  
+  <Tab title="CPU / Apple Silicon">
+    **For experimentation only:**
+    - See `runs/runcpu.sh` for a minimal example
+    - Dramatically shrinks the model to fit in reasonable time
+    - Training time: tens of minutes
+    - Will not produce strong results
+  </Tab>
+</Tabs>
 
-### Step 2: Deploy your changes
+### Software Requirements
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+- Python 3.10 or higher
+- [uv](https://astral.sh/uv) package manager (will be installed automatically)
+- (Optional) [wandb](https://wandb.ai) account for experiment tracking
+
+## Installation
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/karpathy/nanochat.git
+    cd nanochat
+    ```
+  </Step>
+  
+  <Step title="Run the speedrun script">
+    The entire pipeline is contained in a single script:
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```bash
+    bash runs/speedrun.sh
+    ```
+    
+    <Note>
+    This will take ~3 hours to complete. We recommend running it in a screen session:
+    
+    ```bash
+    screen -L -Logfile runs/speedrun.log -S speedrun bash runs/speedrun.sh
+    ```
+    </Note>
+    
+    To enable wandb logging:
+    
+    ```bash
+    # First login to wandb
+    wandb login
+    
+    # Then run with WANDB_RUN environment variable
+    WANDB_RUN=speedrun screen -L -Logfile runs/speedrun.log -S speedrun bash runs/speedrun.sh
+    ```
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## What Happens During the Speedrun
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+The `runs/speedrun.sh` script executes the complete LLM training pipeline:
 
-### Step 3: Go live
+<Steps>
+  <Step title="Environment Setup">
+    The script automatically:
+    - Installs `uv` if not present
+    - Creates a `.venv` virtual environment
+    - Installs all dependencies with `uv sync --extra gpu`
+    - Activates the virtual environment
+  </Step>
+  
+  <Step title="Tokenizer Training">
+    Downloads ~2B characters of pretraining data (8 shards, ~800MB) and trains a BPE tokenizer:
+    
+    ```bash
+    # Download initial data
+    python -m nanochat.dataset -n 8
+    
+    # Download full dataset in background (~350 shards for 10B tokens)
+    python -m nanochat.dataset -n 370 &
+    
+    # Train tokenizer with vocab size 32,768
+    python -m scripts.tok_train
+    
+    # Evaluate tokenizer compression ratio
+    python -m scripts.tok_eval
+    ```
+  </Step>
+  
+  <Step title="Pretraining">
+    Trains a d26 (26-layer) transformer model with FP8 precision:
+    
+    ```bash
+    # Train base model (this is the longest step - ~2.5 hours)
+    torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
+      --depth=26 \
+      --target-param-data-ratio=8.25 \
+      --device-batch-size=16 \
+      --fp8 \
+      --run=$WANDB_RUN
+    
+    # Evaluate: CORE metric, bits per byte, and generate samples
+    torchrun --standalone --nproc_per_node=8 -m scripts.base_eval -- \
+      --device-batch-size=16
+    ```
+    
+    <Note>
+    The `--depth=26` parameter is the single complexity dial. All other hyperparameters (width, number of heads, learning rate, etc.) are calculated automatically.
+    </Note>
+  </Step>
+  
+  <Step title="Supervised Fine-Tuning (SFT)">
+    Teaches the model conversation patterns and tool use:
+    
+    ```bash
+    # Download synthetic identity conversations (2.3MB)
+    curl -L -o ~/.cache/nanochat/identity_conversations.jsonl \
+      https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
+    
+    # Run SFT
+    torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- \
+      --device-batch-size=16 \
+      --run=$WANDB_RUN
+    
+    # Evaluate the chat model
+    torchrun --standalone --nproc_per_node=8 -m scripts.chat_eval -- -i sft
+    ```
+  </Step>
+  
+  <Step title="Generate Report">
+    Creates a comprehensive markdown report with all results:
+    
+    ```bash
+    python -m nanochat.report generate
+    ```
+  </Step>
+</Steps>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+## Talking to Your Model
 
-## Next steps
+Once training is complete, you can chat with your model in two ways:
 
-Now that you have your docs running, explore these key features:
+<Tabs>
+  <Tab title="Web UI (Recommended)">
+    Launch the ChatGPT-like web interface:
+    
+    ```bash
+    # Make sure the virtual environment is active
+    source .venv/bin/activate
+    
+    # Start the web server
+    python -m scripts.chat_web
+    ```
+    
+    Then visit the URL shown in your terminal. 
+    
+    <Note>
+    If you're on a cloud instance (e.g., Lambda), access the UI using the public IP and port:
+    ```
+    http://YOUR_PUBLIC_IP:8000/
+    ```
+    For example: `http://209.20.xxx.xxx:8000/`
+    </Note>
+    
+    Now you can chat with your LLM just like ChatGPT!
+  </Tab>
+  
+  <Tab title="CLI">
+    Chat directly from the command line:
+    
+    ```bash
+    # Ask a single question
+    python -m scripts.chat_cli -p "Why is the sky blue?"
+    
+    # Interactive chat (omit the -p flag)
+    python -m scripts.chat_cli
+    ```
+  </Tab>
+</Tabs>
+
+## Expected Results
+
+Your trained model will:
+
+- Achieve a **DCLM CORE score > 0.256** (beating GPT-2)
+- Have approximately **4e19 FLOPs** of capability
+- Be able to write stories, poems, and answer basic questions
+- Exhibit "kindergartener" level intelligence
+
+### Example Interactions
+
+Try asking your model:
+- "Write me a short story about a robot"
+- "Why is the sky blue?"
+- "What are you? Who created you?"
+- "Count the letter 'r' in 'strawberry'"
+
+<Warning>
+This is a small model trained from scratch, so expect some hallucinations and mistakes. It's perfect for learning and experimentation!
+</Warning>
+
+## Timeline Breakdown
+
+On an 8xH100 GPU node:
+
+| Stage | Duration | Description |
+|-------|----------|-------------|
+| Setup | ~2 min | Install dependencies, create venv |
+| Tokenizer | ~5 min | Download data, train tokenizer |
+| Pretraining | ~2.5 hours | Train 26-layer transformer |
+| SFT | ~15 min | Fine-tune for conversation |
+| Evaluation | ~5 min | Run benchmarks and generate report |
+| **Total** | **~2.76 hours** | **Complete pipeline** |
+
+## Next Steps
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Customize Your Model" icon="palette" href="/guides/identity">
+    Infuse personality and custom abilities into your nanochat
+  </Card>
+  
+  <Card title="Research & Experimentation" icon="flask" href="/guides/research">
+    Train smaller models for rapid iteration and improvement
+  </Card>
+  
+  <Card title="File Structure" icon="folder-tree" href="/reference/structure">
+    Understand the codebase organization
+  </Card>
+  
+  <Card title="Contributing" icon="code-pull-request" href="/contributing">
+    Help improve the state of the art in micro models
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Out of Memory (OOM) errors">
+    Reduce the `--device-batch-size` parameter:
+    
+    ```bash
+    # In runs/speedrun.sh, change from default 32 to lower values
+    --device-batch-size=16  # or 8, 4, 2, 1
+    ```
+    
+    The lower the batch size, the longer training will take, but it will fit in less VRAM.
+  </Accordion>
+  
+  <Accordion title="Dataset download is slow">
+    The script downloads ~370 data shards in the background. If your connection is slow:
+    
+    - Reduce the number of shards: `python -m nanochat.dataset -n 100`
+    - This will train a less capable model but complete faster
+  </Accordion>
+  
+  <Accordion title="Can't access the web UI">
+    If you're on a cloud instance:
+    
+    1. Make sure the port (default 8000) is open in your firewall
+    2. Use the public IP address, not localhost: `http://YOUR_PUBLIC_IP:8000/`
+    3. Check that the server is actually running in the terminal output
+  </Accordion>
+  
+  <Accordion title="Training seems stuck">
+    Check the log output:
+    
+    - Look for `train/tok_per_sec` - should be processing thousands of tokens per second
+    - If using wandb, monitor the `val_bpb` (validation loss) curve
+    - The pretraining step takes the longest (~2.5 hours) - this is normal
+  </Accordion>
+</AccordionGroup>
+
+## Community Support
+
+Need help? Reach out to the community:
+
+- [Discord #nanochat channel](https://discord.com/channels/1020383067459821711/1427295580895314031)
+- [GitHub Discussions](https://github.com/karpathy/nanochat/discussions)
+- [DeepWiki for code questions](https://deepwiki.com/karpathy/nanochat)

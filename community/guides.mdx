@@ -1,0 +1,256 @@
+---
+title: 'Community Guides'
+description: 'Tutorials, writeups, and community resources'
+---
+
+A collection of guides and resources created by the nanochat community.
+
+## Official Guides
+
+### Recent
+
+<Card title="Beating GPT-2 for <<$100" icon="rocket" href="https://github.com/karpathy/nanochat/discussions/481">
+  Detailed writeup of the nanochat journey to train GPT-2 capability for under $100. Covers the baseline run achieving 3.04 hours on 8XH100.
+  
+  **Published:** Feb 1, 2026
+</Card>
+
+<Card title="Jan 7 Miniseries v1" icon="chart-line" href="https://github.com/karpathy/nanochat/discussions/420">
+  Documentation of the first nanochat miniseries of models. Explains scaling laws, the depth parameter, and how hyperparameters are automatically calculated.
+  
+  **Published:** Jan 7, 2026
+</Card>
+
+### Capabilities
+
+<Card title="Counting 'r' in strawberry" icon="spell-check" href="https://github.com/karpathy/nanochat/discussions/164">
+  Guide on adding new abilities to nanochat. Uses letter counting as an example to demonstrate how to teach models new skills through synthetic data and task design.
+</Card>
+
+<Card title="Infusing Identity" icon="user" href="https://github.com/karpathy/nanochat/discussions/139">
+  How to customize your nanochat's personality through synthetic data generation and mixing that data into the SFT stage. Make your model respond with a unique voice.
+</Card>
+
+### Historical
+
+<Card title="Original nanochat Post" icon="flag" href="https://github.com/karpathy/nanochat/discussions/1">
+  The Oct 13, 2025 post introducing nanochat. Note that some information is now deprecated and the model has significantly improved since then.
+  
+  **Published:** Oct 13, 2025
+</Card>
+
+## Getting Started
+
+### Quick Start Paths
+
+**I want to train GPT-2:**
+1. Boot an 8XH100 GPU node
+2. Run `bash runs/speedrun.sh` (takes ~3 hours)
+3. Chat with your model using `python -m scripts.chat_web`
+4. See [Leaderboard](/community/leaderboard) for optimization tips
+
+**I want to experiment:**
+1. Start with a d12 model (~5 minute training runs)
+2. Try different depths: `--depth=12`, `--depth=16`, `--depth=20`
+3. Monitor WandB for improvements in `val_bpb` and `core_metric`
+4. See [Contributing](/community/contributing) for best practices
+
+**I want to add new capabilities:**
+1. Read the [counting 'r' in strawberry](https://github.com/karpathy/nanochat/discussions/164) guide
+2. Create a new Task in `tasks/` directory
+3. Generate synthetic training data if needed
+4. Add to SFT training mixture
+
+## Development Resources
+
+### Core Scripts
+
+- **`runs/speedrun.sh`** - Current state-of-the-art GPT-2 training
+- **`runs/scaling_laws.sh`** - Scaling law experiments
+- **`runs/miniseries.sh`** - Train complete miniseries
+- **`runs/runcpu.sh`** - Small example for CPU/Apple Silicon
+
+### Key Documentation
+
+- **`dev/LOG.md`** - Development log with detailed explanations of changes
+- **`dev/LEADERBOARD.md`** - Full leaderboard documentation
+- **README.md** - Project overview and quick start
+
+### Example Commands
+
+Train a custom depth model:
+```bash
+OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
+    --depth=12 \
+    --run="my-experiment" \
+    --model-tag="d12_experiment"
+```
+
+Evaluate a checkpoint:
+```bash
+python -m scripts.base_eval \
+    --checkpoint=checkpoints/d24_jan29.pt \
+    --core-metric-max-per-task=100
+```
+
+Chat with your model:
+```bash
+# CLI interface
+python -m scripts.chat_cli --checkpoint=checkpoints/d24_jan29.pt
+
+# Web UI
+python -m scripts.chat_web --checkpoint=checkpoints/d24_jan29.pt
+```
+
+## Community Channels
+
+<Card title="GitHub Discussions" icon="github" href="https://github.com/karpathy/nanochat/discussions">
+  Q&A, ideas, and announcements. Best for design discussions and detailed technical questions.
+</Card>
+
+<Card title="Discord #nanochat" icon="discord" href="https://discord.com/channels/1020383067459821711/1427295580895314031">
+  Real-time chat and community support. Great for quick questions and debugging help.
+</Card>
+
+<Card title="DeepWiki" icon="book" href="https://deepwiki.com/karpathy/nanochat">
+  AI-powered search through the nanochat codebase. Ask questions about specific functions or implementation details.
+</Card>
+
+## Research Topics
+
+### Active Areas
+
+**Pretraining efficiency:**
+- Training speed optimizations
+- Better scaling laws
+- Data curriculum strategies
+- Mixed precision techniques
+
+**Model architecture:**
+- Attention mechanism improvements
+- Normalization strategies
+- Initialization methods
+- Parameter-efficient designs
+
+**Evaluation:**
+- Additional benchmarks
+- Faster evaluation methods
+- Better metrics for small models
+
+**Fine-tuning:**
+- SFT improvements
+- RL training strategies
+- Multi-task learning
+- Synthetic data generation
+
+### Scaling Laws
+
+nanochat uses compute-optimal scaling with a single complexity dial (`--depth`). All other hyperparameters scale automatically:
+
+- Model width (hidden dimension)
+- Number of attention heads
+- Learning rate schedules
+- Training horizons (token:param ratio)
+- Weight decay values
+- Batch sizes (as of Run 3)
+
+Default token:param ratio is 10.5 (compute optimal). Adjust with `--target-param-data-ratio` to overtrain or undertrain.
+
+## Tips and Tricks
+
+### Hardware
+
+**8XH100 (recommended):**
+- ~$24/hr ($3/GPU/hr)
+- GPT-2 in ~3 hours = ~$72
+- Spot instances: ~$20 total
+
+**8XA100:**
+- Works fine, slightly slower
+- More widely available
+
+**Single GPU:**
+- Automatic gradient accumulation
+- 8x longer training time
+- Useful for debugging
+
+**Less VRAM (&lt;80GB):**
+- Reduce `--device-batch-size` to 16, 8, 4, 2, or 1
+- Must be power of 2 for clean gradient accumulation
+
+### Training
+
+**OOM issues:**
+```bash
+# Reduce batch size (keeps total batch size via grad accum)
+--device-batch-size=16  # or 8, 4, 2, 1
+```
+
+**Faster iteration:**
+```bash
+# Train smaller model for quick experiments
+--depth=12              # ~5 min runs
+--sample-every=-1       # Disable sampling
+--save-every=-1         # Disable checkpointing
+--core-metric-every=999999  # Only eval at end
+```
+
+**FP8 training:**
+```bash
+# Hopper GPUs only (H100, H200)
+--fp8                   # Faster but slightly lower quality
+# Omit on Ampere (A100) - trains in bfloat16 automatically
+```
+
+### Evaluation
+
+**Quick CORE eval:**
+```bash
+--core-metric-max-per-task=100  # Faster, less accurate
+--core-metric-max-per-task=-1   # Full eval (for leaderboard)
+```
+
+**Monitor these metrics:**
+1. `val_bpb` - Validation loss (bits per byte)
+2. `core_metric` - DCLM CORE score
+3. `train/mfu` - Model FLOPs utilization
+4. `train/tok_per_sec` - Training throughput
+
+## Related Projects
+
+<Card title="nanoGPT" icon="code" href="https://github.com/karpathy/nanoGPT">
+  The original minimal GPT implementation focusing only on pretraining. nanochat extends this with tokenization, fine-tuning, evaluation, inference, and chat UI.
+</Card>
+
+<Card title="modded-nanoGPT" icon="gauge" href="https://github.com/KellerJordan/modded-nanogpt">
+  Community-driven optimization of nanoGPT with leaderboard. Inspired nanochat's leaderboard approach.
+</Card>
+
+## Citation
+
+If you find nanochat helpful in your research:
+
+```bibtex
+@misc{nanochat,
+  author = {Andrej Karpathy},
+  title = {nanochat: The best ChatGPT that \$100 can buy},
+  year = {2025},
+  publisher = {GitHub},
+  url = {https://github.com/karpathy/nanochat}
+}
+```
+
+## Contributing Your Own Guide
+
+Written a tutorial or achieved interesting results? Share with the community:
+
+1. Post in [GitHub Discussions](https://github.com/karpathy/nanochat/discussions)
+2. Tag with appropriate labels (guide, tutorial, results, etc.)
+3. Include:
+   - Clear title and motivation
+   - Step-by-step instructions
+   - Code examples
+   - Results and benchmarks
+   - Links to resources
+
+Helpful guides get featured on this page and in project documentation!

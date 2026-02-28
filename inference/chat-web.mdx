@@ -1,0 +1,365 @@
+---
+title: Web UI Chat Interface
+description: Web-based chat interface with multi-GPU support and streaming responses
+---
+
+The web chat interface provides a browser-based UI for interacting with NanoChat models, with built-in support for multi-GPU data parallelism.
+
+## Quick Start
+
+Launch the web server with default settings:
+
+```bash
+python -m scripts.chat_web
+```
+
+The server will start on `http://localhost:8000` and print the URL to the console.
+
+## Multi-GPU Support
+
+The web server uses data parallelism to distribute requests across multiple GPUs. Each GPU loads a full copy of the model, and incoming requests are distributed to available workers.
+
+### Single GPU (default)
+
+```bash
+python -m scripts.chat_web
+```
+
+### Multiple GPUs
+
+```bash
+# Use 4 GPUs
+python -m scripts.chat_web --num-gpus 4
+
+# Use 8 GPUs
+python -m scripts.chat_web --num-gpus 8
+```
+
+Note: Multi-GPU support requires CUDA. CPU and MPS devices only support single worker mode.
+
+## Server Configuration
+
+### Model Selection
+
+```bash
+# Load from SFT (default) or RL training
+python -m scripts.chat_web -i sft
+python -m scripts.chat_web -i rl
+
+# Load specific model tag
+python -m scripts.chat_web -g my-model-v2
+
+# Load from specific training step
+python -m scripts.chat_web -s 10000
+```
+
+### Default Generation Parameters
+
+```bash
+# Set default temperature (default: 0.8)
+python -m scripts.chat_web -t 1.0
+
+# Set default top-k (default: 50)
+python -m scripts.chat_web -k 100
+
+# Set default max tokens (default: 512)
+python -m scripts.chat_web -m 1024
+```
+
+These defaults can be overridden per-request via the API.
+
+### Network Configuration
+
+```bash
+# Custom port (default: 8000)
+python -m scripts.chat_web -p 8080
+
+# Custom host (default: 0.0.0.0)
+python -m scripts.chat_web --host 127.0.0.1
+```
+
+### Device and Precision
+
+```bash
+# Auto-detect device (default)
+python -m scripts.chat_web
+
+# Force specific device
+python -m scripts.chat_web --device-type cuda
+python -m scripts.chat_web --device-type cpu
+
+# Set precision (default: bfloat16)
+python -m scripts.chat_web -d float32
+```
+
+## API Endpoints
+
+The server exposes the following REST API endpoints:
+
+### Chat UI
+
+```
+GET /
+```
+
+Serves the interactive chat UI. Open this in your browser.
+
+### Chat Completions (Streaming)
+
+```
+POST /chat/completions
+```
+
+Streaming chat completions endpoint. Accepts a list of messages and streams back the assistant response.
+
+**Request Body:**
+
+```json
+{
+  "messages": [
+    {"role": "user", "content": "What is machine learning?"},
+    {"role": "assistant", "content": "Machine learning is..."},
+    {"role": "user", "content": "Tell me more"}
+  ],
+  "temperature": 0.8,
+  "max_tokens": 512,
+  "top_k": 50
+}
+```
+
+**Response (Server-Sent Events):**
+
+```
+data: {"token": "Machine", "gpu": 0}
+
+data: {"token": " learning", "gpu": 0}
+
+data: {"token": " is", "gpu": 0}
+
+data: {"done": true}
+```
+
+### Health Check
+
+```
+GET /health
+```
+
+Returns server health and worker pool status.
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "ready": true,
+  "num_gpus": 4,
+  "available_workers": 3
+}
+```
+
+### Statistics
+
+```
+GET /stats
+```
+
+Returns detailed worker pool statistics.
+
+**Response:**
+
+```json
+{
+  "total_workers": 4,
+  "available_workers": 3,
+  "busy_workers": 1,
+  "workers": [
+    {"gpu_id": 0, "device": "cuda:0"},
+    {"gpu_id": 1, "device": "cuda:1"},
+    {"gpu_id": 2, "device": "cuda:2"},
+    {"gpu_id": 3, "device": "cuda:3"}
+  ]
+}
+```
+
+## Abuse Prevention
+
+The server includes built-in limits to prevent abuse:
+
+- **Maximum 500 messages** per request
+- **Maximum 8,000 characters** per message
+- **Maximum 32,000 characters** total conversation length
+- **Temperature clamped** to 0.0-2.0
+- **Top-k clamped** to 0-200 (0 disables top-k, using full vocabulary)
+- **Max tokens clamped** to 1-4,096
+
+From `scripts/chat_web.py:52-61`:
+
+```python
+# Abuse prevention limits
+MAX_MESSAGES_PER_REQUEST = 500
+MAX_MESSAGE_LENGTH = 8000
+MAX_TOTAL_CONVERSATION_LENGTH = 32000
+MIN_TEMPERATURE = 0.0
+MAX_TEMPERATURE = 2.0
+MIN_TOP_K = 0  # 0 disables top-k filtering
+MAX_TOP_K = 200
+MIN_MAX_TOKENS = 1
+MAX_MAX_TOKENS = 4096
+```
+
+## Complete Examples
+
+### Production Multi-GPU Deployment
+
+```bash
+python -m scripts.chat_web \
+  --num-gpus 8 \
+  -i rl \
+  -g production-v3 \
+  -t 0.7 \
+  -k 50 \
+  -m 1024 \
+  -p 8000 \
+  --host 0.0.0.0
+```
+
+Launches an 8-GPU server with:
+- RL model tagged "production-v3"
+- Temperature 0.7
+- Top-k 50
+- Max tokens 1024
+- Port 8000
+- Accessible from all network interfaces
+
+### Local Development Server
+
+```bash
+python -m scripts.chat_web \
+  -i sft \
+  -t 1.0 \
+  -p 8080 \
+  --host 127.0.0.1
+```
+
+Launches a single-GPU development server:
+- SFT model
+- Temperature 1.0 (more creative)
+- Port 8080
+- Localhost only
+
+### CPU-Only Server
+
+```bash
+python -m scripts.chat_web \
+  --device-type cpu \
+  -d float32 \
+  -t 0.6
+```
+
+Runs on CPU with float32 precision.
+
+## Technical Details
+
+### Worker Pool Architecture
+
+The server uses an async worker pool to manage concurrent requests across GPUs.
+
+From `scripts/chat_web.py:98-148`:
+
+```python
+class WorkerPool:
+    """Pool of workers, each with a model replica on a different GPU."""
+    
+    def __init__(self, num_gpus: Optional[int] = None):
+        if num_gpus is None:
+            if device_type == "cuda":
+                num_gpus = torch.cuda.device_count()
+            else:
+                num_gpus = 1  # cpu|mps
+        self.num_gpus = num_gpus
+        self.workers: List[Worker] = []
+        self.available_workers: asyncio.Queue = asyncio.Queue()
+    
+    async def initialize(self, source: str, model_tag: Optional[str] = None, step: Optional[int] = None):
+        """Load model on each GPU."""
+        for gpu_id in range(self.num_gpus):
+            if device_type == "cuda":
+                device = torch.device(f"cuda:{gpu_id}")
+            else:
+                device = torch.device(device_type)
+            
+            model, tokenizer, _ = load_model(source, device, phase="eval", model_tag=model_tag, step=step)
+            engine = Engine(model, tokenizer)
+            autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype) if device_type == "cuda" else nullcontext()
+            
+            worker = Worker(
+                gpu_id=gpu_id,
+                device=device,
+                engine=engine,
+                tokenizer=tokenizer,
+                autocast_ctx=autocast_ctx
+            )
+            self.workers.append(worker)
+            await self.available_workers.put(worker)
+    
+    async def acquire_worker(self) -> Worker:
+        """Get an available worker from the pool."""
+        return await self.available_workers.get()
+    
+    async def release_worker(self, worker: Worker):
+        """Return a worker to the pool."""
+        await self.available_workers.put(worker)
+```
+
+### Streaming with UTF-8 Handling
+
+The server properly handles multi-byte UTF-8 characters (like emojis) by accumulating tokens and only yielding when the decoded string is valid.
+
+From `scripts/chat_web.py:277-309`:
+
+```python
+# Accumulate tokens to properly handle multi-byte UTF-8 characters
+accumulated_tokens = []
+last_clean_text = ""
+
+with worker.autocast_ctx:
+    for token_column, token_masks in worker.engine.generate(
+        tokens,
+        num_samples=1,
+        max_tokens=max_new_tokens,
+        temperature=temperature,
+        top_k=top_k,
+        seed=random.randint(0, 2**31 - 1)
+    ):
+        token = token_column[0]
+        
+        # Stopping criteria
+        if token == assistant_end or token == bos:
+            break
+        
+        accumulated_tokens.append(token)
+        current_text = worker.tokenizer.decode(accumulated_tokens)
+        # Only emit text if it doesn't end with replacement character
+        if not current_text.endswith('�'):
+            new_text = current_text[len(last_clean_text):]
+            if new_text:
+                yield f"data: {json.dumps({'token': new_text, 'gpu': worker.gpu_id}, ensure_ascii=False)}\n\n"
+                last_clean_text = current_text
+```
+
+## All Flags Reference
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--num-gpus` | `-n` | int | `1` | Number of GPUs to use |
+| `--source` | `-i` | str | `sft` | Model source: `sft` or `rl` |
+| `--temperature` | `-t` | float | `0.8` | Default temperature |
+| `--top-k` | `-k` | int | `50` | Default top-k sampling |
+| `--max-tokens` | `-m` | int | `512` | Default max tokens |
+| `--model-tag` | `-g` | str | None | Model tag to load |
+| `--step` | `-s` | int | None | Training step to load |
+| `--port` | `-p` | int | `8000` | Server port |
+| `--dtype` | `-d` | str | `bfloat16` | Precision: `float32` or `bfloat16` |
+| `--device-type` | | str | auto | Device: `cuda`, `cpu`, or `mps` |
+| `--host` | | str | `0.0.0.0` | Host to bind to |

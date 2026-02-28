@@ -1,0 +1,184 @@
+---
+title: FP8 Training
+description: Accelerate training with 8-bit floating point computation using torchao
+---
+
+## Overview
+
+FP8 (8-bit floating point) training can speed up training by approximately 2x on modern GPUs (H100+) while maintaining model quality. nanochat includes a minimal FP8 implementation that serves as a drop-in replacement for standard linear layers.
+
+## Requirements
+
+- **Hardware**: NVIDIA H100 or newer GPU with FP8 hardware support
+- **Software**: PyTorch with `torch._scaled_mm` support
+- nanochat's custom FP8 implementation (in `nanochat/fp8.py`)
+
+## Quick Start
+
+Enable FP8 training by adding the `--fp8` flag to your training command:
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.base_train \
+    --depth=26 \
+    --fp8 \
+    --fp8-recipe=tensorwise
+```
+
+## How FP8 Works
+
+FP8 training wraps each matrix multiplication (matmul) with quantization/dequantization:
+
+1. **Compute scale**: `scale = FP8_MAX / max(|tensor|)` for each operand
+2. **Quantize**: Convert tensor to FP8 format with clamping
+3. **Matmul**: Use `torch._scaled_mm` (cuBLAS FP8 kernel, ~2x faster than BF16)
+4. **Dequantize**: `_scaled_mm` handles this internally using inverse scales
+
+A standard Linear layer does three matmuls:
+- **Forward**: `output = input @ weight.T`
+- **Backward (grad_input)**: `grad_input = grad_output @ weight`
+- **Backward (grad_weight)**: `grad_weight = grad_output.T @ input`
+
+All three are performed in FP8.
+
+## FP8 Data Types
+
+nanochat uses both FP8 formats following standard conventions:
+
+- **float8_e4m3fn**: 4-bit exponent, 3-bit mantissa, range [-448, 448]
+  - Higher precision (more mantissa bits)
+  - Used for **input** and **weight** tensors
+
+- **float8_e5m2**: 5-bit exponent, 2-bit mantissa, range [-57344, 57344]
+  - Wider range (more exponent bits)
+  - Used for **gradient** tensors (which can be larger)
+
+## Scaling Recipes
+
+The `--fp8-recipe` flag controls the scaling strategy:
+
+### tensorwise (default, recommended)
+
+```bash
+--fp8-recipe=tensorwise
+```
+
+- One scalar scale per entire tensor
+- **Faster**: cuBLAS handles scaling directly
+- ~150 lines of code in nanochat
+- Used in nanochat's speedrun configuration
+
+### rowwise
+
+```bash
+--fp8-recipe=rowwise
+```
+
+- Separate scale per row
+- **More accurate** but slower (requires CUTLASS kernel)
+- Requires full torchao library (not included in nanochat's minimal implementation)
+
+## Implementation Details
+
+nanochat includes a minimal ~150-line FP8 implementation in `nanochat/fp8.py` that replaces torchao's ~2000-line implementation:
+
+```python
+from nanochat.fp8 import Float8LinearConfig, convert_to_float8_training
+
+# Convert model to use FP8 linear layers
+fp8_config = Float8LinearConfig.from_recipe_name("tensorwise")
+convert_to_float8_training(model, config=fp8_config, module_filter_fn=fp8_filter)
+```
+
+The conversion happens automatically when you use `--fp8`. The filter ensures only suitable layers are converted:
+
+- Dimensions must be divisible by 16 (hardware requirement)
+- Minimum dimension size of 128 (too small = not worth overhead)
+
+From `scripts/base_train.py:174-188`:
+
+```python
+def fp8_module_filter(mod: nn.Module, fqn: str) -> bool:
+    if not isinstance(mod, nn.Linear):
+        return False
+    if mod.in_features % 16 != 0 or mod.out_features % 16 != 0:
+        return False
+    if min(mod.in_features, mod.out_features) < 128:
+        return False
+    return True
+```
+
+## Performance
+
+**Speed improvements** (typical on H100):
+- ~2x faster matmul operations vs BF16
+- ~30-40% overall training speedup (matmul is dominant but not 100% of time)
+- Current leaderboard entry #2 uses FP8 to achieve 2.91 hour time-to-GPT-2
+
+**Memory**: FP8 uses slightly less memory than BF16 but the difference is small since weights are stored in original precision.
+
+**Accuracy**: Compute-optimal training with FP8 produces models with equivalent quality to BF16 (as validated by CORE metric).
+
+## Evaluation in BF16
+
+Evaluation runs in BF16 for consistency, even when training with FP8. The training script automatically disables FP8 during evaluation:
+
+```python
+with disable_fp8(model), autocast_ctx:
+    val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+```
+
+This ensures validation metrics are comparable across runs.
+
+## Troubleshooting
+
+### "FP8 training requires CUDA"
+
+FP8 requires CUDA GPUs. If you see this warning, your device type is not supported:
+
+```
+Warning: FP8 training requires CUDA, ignoring --fp8 flag
+```
+
+### Dimensions not divisible by 16
+
+If too many layers are skipped, you may see:
+
+```
+FP8 training enabled (tensorwise scaling) - converted 120/180 linear layers, skipped 60 (too small)
+```
+
+This is normal. Small layers (embeddings, layernorms) remain in original precision.
+
+### Compatibility
+
+FP8 works with:
+- ✅ Multi-GPU training via `torchrun`
+- ✅ Gradient accumulation
+- ✅ `torch.compile`
+- ✅ Mixed precision (autocast)
+- ❌ Non-CUDA devices (CPU, MPS)
+- ❌ Pre-Hopper GPUs (A100, V100, etc.)
+
+## Example: Speedrun with FP8
+
+The current speedrun configuration uses FP8 to achieve sub-3-hour GPT-2 training:
+
+```bash
+# From runs/speedrun.sh
+OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train \
+    --depth=26 \
+    --fp8 \
+    --fp8-recipe=tensorwise \
+    --run="speedrun_fp8" \
+    --eval-every=500 \
+    --core-metric-every=2000
+```
+
+See leaderboard entry #2 (Feb 2 2026, commit a67eba3) which achieved **2.91 hour** time-to-GPT-2 using FP8.
+
+## Further Reading
+
+- `nanochat/fp8.py` - Full implementation with detailed comments
+- `scripts/base_train.py:161-236` - FP8 initialization and management
+- [torchao documentation](https://github.com/pytorch/ao) - Full torchao library (optional)
+- [NVIDIA FP8 formats](https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/index.html) - Official specification

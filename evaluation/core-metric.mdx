@@ -1,0 +1,220 @@
+---
+title: CORE Metric
+description: Understanding the DCLM CORE benchmark for base model evaluation
+---
+
+## Overview
+
+The CORE metric is a standardized benchmark for evaluating language models, introduced in the DataComp-LM (DCLM) paper. It measures model performance across multiple in-context learning (ICL) tasks and produces a single, centered accuracy score.
+
+**GPT-2 Baseline:** 0.256525
+
+## What is CORE?
+
+CORE evaluates models on a suite of tasks covering:
+- Reading comprehension
+- Common sense reasoning
+- World knowledge
+- Question answering
+
+The metric is "centered" against random baseline performance, meaning:
+- **0.0** = Random guessing
+- **1.0** = Perfect performance
+
+This normalization makes it easier to compare models across tasks with different difficulty levels.
+
+## How CORE is Calculated
+
+### 1. Evaluate Individual Tasks
+
+For each task, the model is evaluated using few-shot prompting:
+
+```python
+from nanochat.core_eval import evaluate_task
+
+accuracy = evaluate_task(model, tokenizer, data, device, task_meta)
+```
+
+Task metadata includes:
+- `task_type`: Type of evaluation (multiple_choice, schema, language_modeling)
+- `num_fewshot`: Number of examples to include in the prompt
+- `continuation_delimiter`: Separator between context and answer (usually a space)
+
+### 2. Center Against Random Baseline
+
+Each task's raw accuracy is centered:
+
+```python
+centered_result = (accuracy - random_baseline) / (1.0 - random_baseline)
+```
+
+Where `random_baseline` is the expected accuracy from random guessing (e.g., 25% for 4-choice multiple choice).
+
+### 3. Average Centered Results
+
+The CORE metric is the mean of all centered results:
+
+```python
+core_metric = sum(centered_results.values()) / len(centered_results)
+```
+
+## Task Types
+
+CORE supports three evaluation paradigms:
+
+### Multiple Choice
+
+The model chooses between several answer options. All prompts share the same context but have different continuations.
+
+```python
+from nanochat.core_eval import render_prompts_mc
+
+prompts = render_prompts_mc(item, continuation_delimiter, fewshot_examples)
+```
+
+**Evaluation:** The option with the lowest average loss is selected.
+
+### Schema
+
+The model evaluates different contexts leading to the same continuation.
+
+```python
+from nanochat.core_eval import render_prompts_schema
+
+prompts = render_prompts_schema(item, continuation_delimiter, fewshot_examples)
+```
+
+**Evaluation:** The context with the lowest average loss is selected.
+
+### Language Modeling
+
+The model predicts a continuation given a context.
+
+```python
+from nanochat.core_eval import render_prompts_lm
+
+prompts = render_prompts_lm(item, continuation_delimiter, fewshot_examples)
+```
+
+**Evaluation:** All predicted tokens must match the ground truth exactly.
+
+## Evaluation Process
+
+### Per-Example Evaluation
+
+Each example is evaluated individually:
+
+```python
+from nanochat.core_eval import evaluate_example
+
+is_correct = evaluate_example(
+    idx, model, tokenizer, data, device, task_meta
+)
+```
+
+The process:
+1. Sample few-shot examples (deterministically seeded)
+2. Render prompts based on task type
+3. Tokenize and batch sequences
+4. Forward through the model
+5. Compute losses and predictions
+6. Determine correctness based on task type
+
+### Distributed Evaluation
+
+CORE evaluation supports multi-GPU parallelism:
+
+```python
+rank = dist.get_rank() if dist.is_initialized() else 0
+world_size = dist.get_world_size() if dist.is_initialized() else 1
+
+# Each rank processes its subset
+for idx in range(rank, len(data), world_size):
+    is_correct = evaluate_example(...)
+    correct[idx] = float(is_correct)
+
+# Aggregate results across GPUs
+if world_size > 1:
+    dist.all_reduce(correct, op=dist.ReduceOp.SUM)
+```
+
+## Running CORE Evaluation
+
+### Evaluate a nanochat Model
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.base_eval \
+  --model-tag d24 \
+  --eval core
+```
+
+### Evaluate a HuggingFace Model
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.base_eval \
+  --hf-path openai-community/gpt2 \
+  --eval core
+```
+
+### Quick Evaluation (Single GPU)
+
+For faster approximate results:
+
+```bash
+python -m scripts.base_eval \
+  --model-tag d24 \
+  --eval core \
+  --max-per-task 100
+```
+
+## Implementation Details
+
+### Tokenization
+
+Prompts are tokenized with BOS prepended:
+
+```python
+tokens = tokenizer(prompts, prepend=tokenizer.get_bos_token_id())
+```
+
+### Sequence Truncation
+
+For models with maximum sequence length (e.g., GPT-2 with 1024 tokens):
+
+```python
+if len(tokens) > model.max_seq_len:
+    num_to_crop = len(tokens) - model.max_seq_len
+    tokens = tokens[-model.max_seq_len:]  # Keep last tokens
+    start_idx -= num_to_crop  # Adjust indices
+    end_idx -= num_to_crop
+```
+
+### Loss Calculation
+
+Cross-entropy loss is computed autoregressively:
+
+```python
+losses = torch.nn.functional.cross_entropy(
+    outputs.view(batch_size * seq_len, -1),
+    target_ids.view(batch_size * seq_len),
+    reduction='none'
+).view(batch_size, seq_len)
+```
+
+## Output Format
+
+Results are saved to CSV:
+
+```csv
+Task                               , Accuracy  , Centered  
+arc_easy                          , 0.650000  , 0.533333  
+arc_challenge                     , 0.350000  , 0.133333  
+mmlu                              , 0.450000  , 0.266667  
+CORE                              ,           , 0.311111  
+```
+
+## Reference
+
+Based on the DataComp-LM paper: https://arxiv.org/abs/2406.11794
+
+Implementation: `nanochat/core_eval.py:evaluate_task`

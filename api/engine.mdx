@@ -1,0 +1,223 @@
+---
+title: Engine
+description: Efficient inference engine with KV cache for autoregressive generation
+---
+
+## Overview
+
+The `Engine` class provides an efficient interface for autoregressive text generation with KV caching.
+
+## Engine Class
+
+```python
+from nanochat.engine import Engine
+from nanochat.gpt import GPT
+from nanochat.tokenizer import get_tokenizer
+
+# Load model and tokenizer
+model = GPT.from_pretrained("path/to/checkpoint")
+tokenizer = get_tokenizer()
+
+# Create engine
+engine = Engine(model, tokenizer)
+```
+
+### Constructor
+
+<ParamField path="model" type="GPT" required>
+  The GPT model instance to use for generation
+</ParamField>
+
+<ParamField path="tokenizer" type="object" required>
+  Tokenizer instance with `encode()` and `decode()` methods
+</ParamField>
+
+## Generation Methods
+
+### generate()
+
+Generates text from a prompt using autoregressive sampling.
+
+```python
+prompt = "The quick brown fox"
+response = engine.generate(
+    prompt,
+    max_tokens=100,
+    temperature=1.0,
+    top_p=0.9,
+    stop_tokens=["<|end|>", "<|endoftext|>"]
+)
+print(response)
+```
+
+<ParamField path="prompt" type="str" required>
+  Input text prompt to continue from
+</ParamField>
+
+<ParamField path="max_tokens" type="int" default="512">
+  Maximum number of tokens to generate
+</ParamField>
+
+<ParamField path="temperature" type="float" default="1.0">
+  Sampling temperature. Higher values (e.g., 1.5) make output more random, lower values (e.g., 0.7) more deterministic.
+</ParamField>
+
+<ParamField path="top_p" type="float" default="1.0">
+  Nucleus sampling threshold. Only sample from tokens whose cumulative probability mass is in the top-p.
+</ParamField>
+
+<ParamField path="stop_tokens" type="list[str]">
+  List of tokens that stop generation when encountered
+</ParamField>
+
+<ResponseField name="response" type="str">
+  Generated text completion
+</ResponseField>
+
+### chat()
+
+Generates a chat response from conversation history.
+
+```python
+messages = [
+    {"role": "user", "content": "What is the capital of France?"},
+]
+
+response = engine.chat(
+    messages,
+    max_tokens=256,
+    temperature=0.8
+)
+print(response)
+```
+
+<ParamField path="messages" type="list[dict]" required>
+  List of message dictionaries with `role` ("user" or "assistant") and `content` fields
+</ParamField>
+
+<ParamField path="max_tokens" type="int" default="512">
+  Maximum tokens to generate in the response
+</ParamField>
+
+<ParamField path="temperature" type="float" default="1.0">
+  Sampling temperature
+</ParamField>
+
+<ParamField path="top_p" type="float" default="1.0">
+  Nucleus sampling threshold
+</ParamField>
+
+<ResponseField name="response" type="str">
+  Generated assistant response
+</ResponseField>
+
+## KV Cache
+
+The engine automatically manages a key-value cache to avoid recomputing attention for previously processed tokens.
+
+### Benefits
+
+<CardGroup cols={2}>
+  <Card title="Speed" icon="gauge-high">
+    Dramatically faster generation by caching past key/value states
+  </Card>
+  <Card title="Memory Efficient" icon="memory">
+    Only stores compressed KV states, not full activations
+  </Card>
+  <Card title="Automatic" icon="wand-magic-sparkles">
+    Engine handles cache management transparently
+  </Card>
+  <Card title="GQA Optimized" icon="layer-group">
+    Works efficiently with Group-Query Attention
+  </Card>
+</CardGroup>
+
+### Cache Structure
+
+The KV cache is a dictionary mapping layer indices to cached key and value tensors:
+
+```python
+kv_cache = {
+    0: {"k": k_tensor, "v": v_tensor},  # Layer 0
+    1: {"k": k_tensor, "v": v_tensor},  # Layer 1
+    # ...
+}
+```
+
+Each cached tensor has shape:
+- Keys: `(batch_size, seq_len, n_kv_head, head_dim)`
+- Values: `(batch_size, seq_len, n_kv_head, head_dim)`
+
+## Sampling Strategies
+
+### Temperature Sampling
+
+Controls randomness of predictions:
+
+```python
+# More focused/deterministic (good for factual tasks)
+response = engine.generate(prompt, temperature=0.7)
+
+# More creative/diverse (good for creative writing)
+response = engine.generate(prompt, temperature=1.5)
+```
+
+### Nucleus (Top-p) Sampling
+
+Samples from the smallest set of tokens whose cumulative probability exceeds p:
+
+```python
+# Only sample from top 90% probability mass
+response = engine.generate(prompt, top_p=0.9)
+
+# More conservative (top 50%)
+response = engine.generate(prompt, top_p=0.5)
+```
+
+### Combined Strategy
+
+```python
+# Recommended settings for balanced output
+response = engine.generate(
+    prompt,
+    temperature=0.8,  # Slightly less random
+    top_p=0.95,       # Cut off unlikely tokens
+    max_tokens=512
+)
+```
+
+## Usage Example
+
+```python
+from nanochat.engine import Engine
+from nanochat.gpt import GPT
+from nanochat.tokenizer import get_tokenizer
+
+# Load checkpoint
+model = GPT.from_pretrained("~/.cache/nanochat/checkpoints/d26_sft")
+tokenizer = get_tokenizer()
+
+# Create engine
+engine = Engine(model, tokenizer)
+
+# Generate text
+text = engine.generate(
+    "Once upon a time",
+    max_tokens=200,
+    temperature=1.0
+)
+print(text)
+
+# Chat conversation
+conversation = [
+    {"role": "user", "content": "Write a haiku about programming."}
+]
+response = engine.chat(conversation, temperature=0.9)
+print(response)
+```
+
+## See Also
+
+- [Chat CLI](/inference/chat-cli) - Command-line chat interface
+- [Chat Web UI](/inference/chat-web) - Web-based chat interface
+- [GPT Model](/api/gpt) - Underlying model architecture

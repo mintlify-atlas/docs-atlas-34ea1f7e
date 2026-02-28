@@ -1,0 +1,177 @@
+---
+title: chat_rl.py
+description: Reinforcement learning on GSM8K via simplified GRPO
+---
+
+Reinforcement learning script that improves a chat model's math reasoning using policy gradients on GSM8K.
+
+## Usage
+
+```bash
+# Single GPU
+python -m scripts.chat_rl
+
+# Distributed (8 GPUs)
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_rl -- --run=default
+```
+
+## Algorithm
+
+Simplified GRPO (Group Relative Policy Optimization):
+
+1. No trust region (no KL regularization to reference model)
+2. On-policy (no PPO ratio+clip)
+3. DAPO-style token-level normalization
+4. Advantage = reward - mean (not z-score)
+
+This reduces to a simple REINFORCE-style algorithm.
+
+## Parameters
+
+### Logging
+
+<ParamField path="--run" type="str" default="dummy">
+  Weights & Biases run name. Use `'dummy'` to disable wandb logging.
+</ParamField>
+
+### Runtime
+
+<ParamField path="--device-type" type="str" default="">
+  Device type: `cuda`, `cpu`, or `mps`. Empty string enables autodetection.
+</ParamField>
+
+<ParamField path="--dtype" type="str" default="bfloat16">
+  Floating point precision: `float32` or `bfloat16`.
+</ParamField>
+
+### Model Loading
+
+<ParamField path="--model-tag" type="str" default="None">
+  Model tag to load from SFT checkpoints (e.g. `d24`).
+</ParamField>
+
+<ParamField path="--model-step" type="int" default="None">
+  Model step to load. If not specified, loads the last checkpoint.
+</ParamField>
+
+### Training Horizon
+
+<ParamField path="--num-epochs" type="int" default="1">
+  Number of epochs over GSM8K training set.
+</ParamField>
+
+### Batch Sizes / Sampling
+
+<ParamField path="--device-batch-size" type="int" default="8">
+  Maximum batch size per forward pass.
+</ParamField>
+
+<ParamField path="--examples-per-step" type="int" default="16">
+  Total examples per optimization step across all ranks.
+</ParamField>
+
+<ParamField path="--num-samples" type="int" default="16">
+  Number of samples per example/question.
+</ParamField>
+
+### Generation
+
+<ParamField path="--max-new-tokens" type="int" default="256">
+  Maximum tokens to generate per sample.
+</ParamField>
+
+<ParamField path="--temperature" type="float" default="1.0">
+  Sampling temperature for generation.
+</ParamField>
+
+<ParamField path="--top-k" type="int" default="50">
+  Top-k sampling. `0` = disabled.
+</ParamField>
+
+### Optimization
+
+<ParamField path="--embedding-lr" type="float" default="0.2">
+  Learning rate for embedding parameters (Adam).
+</ParamField>
+
+<ParamField path="--unembedding-lr" type="float" default="0.004">
+  Learning rate for unembedding parameters (Adam).
+</ParamField>
+
+<ParamField path="--matrix-lr" type="float" default="0.02">
+  Learning rate for matrix parameters (Muon).
+</ParamField>
+
+<ParamField path="--weight-decay" type="float" default="0.0">
+  Weight decay for embedding/unembedding parameters (Adam).
+</ParamField>
+
+<ParamField path="--init-lr-frac" type="float" default="0.05">
+  Initial learning rate as fraction of base learning rate.
+</ParamField>
+
+### Evaluation / Checkpointing
+
+<ParamField path="--eval-every" type="int" default="60">
+  Evaluate pass@k every N steps.
+</ParamField>
+
+<ParamField path="--eval-examples" type="int" default="400">
+  Number of examples for pass@k evaluation.
+</ParamField>
+
+<ParamField path="--save-every" type="int" default="60">
+  Save checkpoint every N steps.
+</ParamField>
+
+## Examples
+
+### Basic RL Training
+
+```bash
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_rl \
+  --run=my-rl-run \
+  --model-tag=d24
+```
+
+### Multiple Epochs
+
+```bash
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_rl \
+  --model-tag=d24 \
+  --num-epochs=3
+```
+
+### More Samples per Question
+
+```bash
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_rl \
+  --model-tag=d24 \
+  --num-samples=32 \
+  --examples-per-step=8
+```
+
+### Higher Temperature Exploration
+
+```bash
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_rl \
+  --model-tag=d24 \
+  --temperature=1.5 \
+  --top-k=100
+```
+
+## Reward Function
+
+The reward is calculated by:
+1. Generating completions for GSM8K problems
+2. Extracting the final numerical answer from the completion
+3. Comparing with the ground truth answer
+4. Binary reward: 1.0 for correct, 0.0 for incorrect
+
+## Pass@k Evaluation
+
+During evaluation, the script computes pass@k for k=1 to `device_batch_size`:
+- **pass@1**: At least one correct answer in top 1 sample
+- **pass@k**: At least one correct answer in top k samples
+
+This measures the model's ability to solve problems with multiple attempts.

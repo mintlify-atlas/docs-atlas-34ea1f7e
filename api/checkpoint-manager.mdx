@@ -1,0 +1,258 @@
+---
+title: Checkpoint Manager
+description: Functions for saving and loading model checkpoints
+---
+
+## Overview
+
+The `nanochat.checkpoint_manager` module provides utilities for saving and loading model, optimizer, and metadata checkpoints during training.
+
+## save_checkpoint
+
+Save model, optimizer, and metadata to checkpoint directory.
+
+```python
+def save_checkpoint(
+    checkpoint_dir: str,
+    step: int,
+    model_data: dict,
+    optimizer_data: dict,
+    meta_data: dict,
+    rank: int = 0
+)
+```
+
+### Parameters
+
+<ParamField path="checkpoint_dir" type="str" required>
+  Directory to save checkpoint files
+</ParamField>
+
+<ParamField path="step" type="int" required>
+  Training step number (used in filename)
+</ParamField>
+
+<ParamField path="model_data" type="dict" required>
+  Model state dict to save
+</ParamField>
+
+<ParamField path="optimizer_data" type="dict">
+  Optimizer state dict to save. If `None`, optimizer state is not saved.
+  
+  Note: In distributed training, optimizer state is sharded across ranks, so each rank saves its own shard.
+</ParamField>
+
+<ParamField path="meta_data" type="dict" required>
+  Metadata dict to save as JSON (e.g., model config, training hyperparameters)
+</ParamField>
+
+<ParamField path="rank" type="int" default="0">
+  Rank of the current process (for distributed training)
+</ParamField>
+
+### Saved Files
+
+- `model_{step:06d}.pt` - Model parameters (saved only on rank 0)
+- `meta_{step:06d}.json` - Metadata JSON (saved only on rank 0)
+- `optim_{step:06d}_rank{rank}.pt` - Optimizer state shard for each rank
+
+### Example
+
+```python
+from nanochat.checkpoint_manager import save_checkpoint
+
+# Prepare checkpoint data
+model_data = model.state_dict()
+optimizer_data = optimizer.state_dict()
+meta_data = {
+    'model_config': model.config.__dict__,
+    'step': step,
+    'learning_rate': lr
+}
+
+# Save checkpoint
+save_checkpoint(
+    checkpoint_dir='checkpoints/d12',
+    step=1000,
+    model_data=model_data,
+    optimizer_data=optimizer_data,
+    meta_data=meta_data,
+    rank=0
+)
+```
+
+---
+
+## load_checkpoint
+
+Load model, optimizer, and metadata from checkpoint directory.
+
+```python
+def load_checkpoint(
+    checkpoint_dir: str,
+    step: int,
+    device: torch.device,
+    load_optimizer: bool = False,
+    rank: int = 0
+) -> tuple[dict, dict | None, dict]
+```
+
+### Parameters
+
+<ParamField path="checkpoint_dir" type="str" required>
+  Directory containing checkpoint files
+</ParamField>
+
+<ParamField path="step" type="int" required>
+  Training step number to load
+</ParamField>
+
+<ParamField path="device" type="torch.device" required>
+  Device to map loaded tensors to
+</ParamField>
+
+<ParamField path="load_optimizer" type="bool" default="False">
+  Whether to load optimizer state
+</ParamField>
+
+<ParamField path="rank" type="int" default="0">
+  Rank of the current process (for loading optimizer shard)
+</ParamField>
+
+### Returns
+
+<ResponseField name="model_data" type="dict">
+  Model state dict
+</ResponseField>
+
+<ResponseField name="optimizer_data" type="dict | None">
+  Optimizer state dict (or `None` if `load_optimizer=False`)
+</ResponseField>
+
+<ResponseField name="meta_data" type="dict">
+  Metadata dict loaded from JSON
+</ResponseField>
+
+### Example
+
+```python
+import torch
+from nanochat.checkpoint_manager import load_checkpoint
+
+# Load checkpoint
+model_data, optimizer_data, meta_data = load_checkpoint(
+    checkpoint_dir='checkpoints/d12',
+    step=1000,
+    device=torch.device('cuda'),
+    load_optimizer=True,
+    rank=0
+)
+
+# Restore model and optimizer
+model.load_state_dict(model_data)
+if optimizer_data is not None:
+    optimizer.load_state_dict(optimizer_data)
+```
+
+---
+
+## Utility Functions
+
+### build_model
+
+Build a model from a checkpoint.
+
+```python
+def build_model(
+    checkpoint_dir: str,
+    step: int,
+    device: torch.device,
+    phase: str
+) -> tuple[GPT, Tokenizer, dict]
+```
+
+**Parameters:**
+- `checkpoint_dir` (str): Directory containing checkpoints
+- `step` (int): Training step to load
+- `device` (torch.device): Device to load model on
+- `phase` (str): Either `'train'` or `'eval'`
+
+**Returns:** (model, tokenizer, meta_data)
+
+### find_largest_model
+
+Find the largest model in a checkpoints directory.
+
+```python
+def find_largest_model(checkpoints_dir: str) -> str
+```
+
+Attempts to find the model tag with the largest depth (e.g., `d12` > `d6`).
+
+### find_last_step
+
+Find the last checkpoint step in a directory.
+
+```python
+def find_last_step(checkpoint_dir: str) -> int
+```
+
+Scans for `model_*.pt` files and returns the highest step number.
+
+### load_model_from_dir
+
+Convenience function to load a model with automatic model tag and step detection.
+
+```python
+def load_model_from_dir(
+    checkpoints_dir: str,
+    device: torch.device,
+    phase: str,
+    model_tag: str | None = None,
+    step: int | None = None
+) -> tuple[GPT, Tokenizer, dict]
+```
+
+### load_model
+
+Load a model from standard nanochat directories.
+
+```python
+def load_model(
+    source: str,
+    device: torch.device,
+    phase: str,
+    model_tag: str | None = None,
+    step: int | None = None
+) -> tuple[GPT, Tokenizer, dict]
+```
+
+**Parameters:**
+- `source` (str): One of `'base'`, `'sft'`, or `'rl'`
+- Other parameters same as `load_model_from_dir`
+
+**Returns:** (model, tokenizer, meta_data)
+
+### load_optimizer_state
+
+Load just the optimizer shard for a given rank.
+
+```python
+def load_optimizer_state(
+    source: str,
+    device: torch.device,
+    rank: int,
+    model_tag: str | None = None,
+    step: int | None = None
+) -> dict | None
+```
+
+Useful for resuming distributed training without reloading the model.
+
+---
+
+## Notes
+
+- The module handles backward compatibility by patching missing config keys from older checkpoints
+- CPU/MPS devices automatically convert bfloat16 tensors to float32
+- Handles `torch.compile` artifacts by removing `_orig_mod.` prefixes from state dict keys

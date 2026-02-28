@@ -1,0 +1,190 @@
+---
+title: CLI Chat Interface
+description: Interactive command-line interface for chatting with NanoChat models
+---
+
+The CLI chat interface provides an interactive terminal-based way to chat with your trained NanoChat models.
+
+## Basic Usage
+
+Run the chat interface with default settings:
+
+```bash
+python -m scripts.chat_cli
+```
+
+This loads the most recent SFT model and starts an interactive chat session.
+
+## Command-Line Options
+
+### Model Selection
+
+```bash
+# Load from SFT (default) or RL training
+python -m scripts.chat_cli -i sft
+python -m scripts.chat_cli -i rl
+
+# Load a specific model tag
+python -m scripts.chat_cli -g my-model-v2
+
+# Load from a specific training step
+python -m scripts.chat_cli -s 10000
+```
+
+### Generation Parameters
+
+```bash
+# Set temperature (default: 0.6)
+python -m scripts.chat_cli -t 0.8
+
+# Set top-k sampling (default: 50)
+python -m scripts.chat_cli -k 100
+```
+
+### Device Configuration
+
+```bash
+# Auto-detect device (default)
+python -m scripts.chat_cli
+
+# Force specific device
+python -m scripts.chat_cli --device-type cuda
+python -m scripts.chat_cli --device-type cpu
+python -m scripts.chat_cli --device-type mps
+
+# Set precision (default: bfloat16)
+python -m scripts.chat_cli -d float32
+python -m scripts.chat_cli -d bfloat16
+```
+
+### Single Prompt Mode
+
+Get a single response without interactive mode:
+
+```bash
+python -m scripts.chat_cli -p "What is the capital of France?"
+```
+
+This runs the model once and exits after generating the response.
+
+## Interactive Commands
+
+When running in interactive mode:
+
+| Command | Description |
+|---------|-------------|
+| `quit` or `exit` | End the conversation and exit |
+| `clear` | Start a new conversation (clears history) |
+
+## Complete Examples
+
+### Standard Chat Session
+
+```bash
+python -m scripts.chat_cli
+
+NanoChat Interactive Mode
+--------------------------------------------------
+Type 'quit' or 'exit' to end the conversation
+Type 'clear' to start a new conversation
+--------------------------------------------------
+
+User: What is machine learning?
+
+Assistant: Machine learning is a subset of artificial intelligence...
+
+User: clear
+Conversation cleared.
+
+User: Tell me a joke
+
+Assistant: Why did the programmer quit his job?...
+
+User: exit
+Goodbye!
+```
+
+### High Temperature Creative Mode
+
+```bash
+python -m scripts.chat_cli -t 1.0 -k 100
+```
+
+Higher temperature (1.0) and top-k (100) for more creative, diverse responses.
+
+### Low Temperature Deterministic Mode
+
+```bash
+python -m scripts.chat_cli -t 0.1 -k 20
+```
+
+Lower temperature (0.1) and top-k (20) for more focused, deterministic responses.
+
+### Load Specific RL Model
+
+```bash
+python -m scripts.chat_cli -i rl -g reward-tuned -s 5000
+```
+
+Load the RL model with tag "reward-tuned" at step 5000.
+
+## Technical Details
+
+### Conversation Format
+
+The CLI maintains conversation state using special tokens:
+
+- `<|user_start|>` and `<|user_end|>` wrap user messages
+- `<|assistant_start|>` and `<|assistant_end|>` wrap assistant responses
+- Conversation begins with BOS token
+
+From `scripts/chat_cli.py:47-101`:
+
+```python
+conversation_tokens = [bos]
+
+while True:
+    user_input = input("\nUser: ").strip()
+    
+    # Add User message to the conversation
+    conversation_tokens.append(user_start)
+    conversation_tokens.extend(tokenizer.encode(user_input))
+    conversation_tokens.append(user_end)
+    
+    # Kick off the assistant
+    conversation_tokens.append(assistant_start)
+    generate_kwargs = {
+        "num_samples": 1,
+        "max_tokens": 256,
+        "temperature": args.temperature,
+        "top_k": args.top_k,
+    }
+    response_tokens = []
+    with autocast_ctx:
+        for token_column, token_masks in engine.generate(conversation_tokens, **generate_kwargs):
+            token = token_column[0]
+            response_tokens.append(token)
+            token_text = tokenizer.decode([token])
+            print(token_text, end="", flush=True)
+    
+    if response_tokens[-1] != assistant_end:
+        response_tokens.append(assistant_end)
+    conversation_tokens.extend(response_tokens)
+```
+
+### KV Cache Efficiency
+
+The CLI uses the [Engine](/inference/engine) with KV caching for efficient inference. Each new token is generated in O(1) time relative to conversation length, rather than re-processing the entire history.
+
+## All Flags Reference
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--source` | `-i` | str | `sft` | Model source: `sft` or `rl` |
+| `--model-tag` | `-g` | str | None | Specific model tag to load |
+| `--step` | `-s` | int | None | Training step to load |
+| `--prompt` | `-p` | str | `''` | Single prompt mode (non-interactive) |
+| `--temperature` | `-t` | float | `0.6` | Sampling temperature |
+| `--top-k` | `-k` | int | `50` | Top-k sampling parameter |
+| `--device-type` | | str | auto | Device: `cuda`, `cpu`, or `mps` |
+| `--dtype` | `-d` | str | `bfloat16` | Precision: `float32` or `bfloat16` |

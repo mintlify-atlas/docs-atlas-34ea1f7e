@@ -1,0 +1,240 @@
+---
+title: Dataloader
+description: Distributed data loading with BOS-aligned best-fit packing
+---
+
+## Overview
+
+The nanochat dataloader provides efficient, distributed data loading for pretraining and fine-tuning with automatic tokenization and sequence packing.
+
+## tokenizing_distributed_data_loader_bos_bestfit
+
+Creates a distributed data loader with BOS-aligned best-fit packing.
+
+```python
+from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
+
+loader = tokenizing_distributed_data_loader_bos_bestfit(
+    data_shards=["shard_000.zst", "shard_001.zst", ...],
+    batch_size=32,
+    sequence_len=2048,
+    tokenizer=tokenizer,
+    world_size=8,
+    rank=0
+)
+
+for batch in loader:
+    input_ids = batch["input_ids"]  # (B, T)
+    # Train on this batch
+```
+
+### Parameters
+
+<ParamField path="data_shards" type="list[str]" required>
+  List of paths to compressed data shard files (.zst format)
+</ParamField>
+
+<ParamField path="batch_size" type="int" required>
+  Number of sequences per batch (per device)
+</ParamField>
+
+<ParamField path="sequence_len" type="int" required>
+  Maximum sequence length (context window)
+</ParamField>
+
+<ParamField path="tokenizer" type="object" required>
+  Tokenizer instance with `encode()` method
+</ParamField>
+
+<ParamField path="world_size" type="int" default="1">
+  Total number of distributed processes
+</ParamField>
+
+<ParamField path="rank" type="int" default="0">
+  Rank of current process (0 to world_size-1)
+</ParamField>
+
+### Returns
+
+<ResponseField name="loader" type="generator">
+  Generator yielding batches with:
+  - `input_ids`: Token IDs of shape `(batch_size, sequence_len)`
+  - `attention_mask`: Optional attention mask (for packed sequences)
+</ResponseField>
+
+## tokenizing_distributed_data_loader_with_state_bos_bestfit
+
+Stateful version that supports checkpointing and resuming.
+
+```python
+from nanochat.dataloader import tokenizing_distributed_data_loader_with_state_bos_bestfit
+
+loader_state = {
+    "shard_idx": 0,
+    "byte_offset": 0,
+    "tokens_consumed": 0
+}
+
+loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(
+    data_shards=data_shards,
+    batch_size=32,
+    sequence_len=2048,
+    tokenizer=tokenizer,
+    state=loader_state,
+    world_size=8,
+    rank=0
+)
+
+for batch in loader:
+    # Training step...
+    
+    # Save state for resuming
+    checkpoint = {
+        "loader_state": loader_state,
+        "model_state": model.state_dict(),
+        # ...
+    }
+```
+
+<ParamField path="state" type="dict" required>
+  Mutable dictionary to track loader state:
+  - `shard_idx`: Current shard index
+  - `byte_offset`: Byte offset within current shard
+  - `tokens_consumed`: Total tokens processed
+</ParamField>
+
+## BOS-Aligned Best-Fit Packing
+
+The dataloader uses a sophisticated packing algorithm optimized for LLM training:
+
+### BOS Alignment
+
+- Every sequence starts with a **Beginning of Sequence (BOS)** token
+- Multiple documents can be packed into a single sequence
+- Each document boundary is marked with BOS
+- This allows the model to learn document boundaries naturally
+
+### Best-Fit Packing
+
+<Steps>
+  <Step title="Tokenize documents">
+    Each document is tokenized independently
+  </Step>
+  <Step title="Pack sequences">
+    Documents are packed together to fill sequences up to `sequence_len`
+  </Step>
+  <Step title="Minimize padding">
+    Best-fit algorithm minimizes wasted tokens from padding
+  </Step>
+  <Step title="Insert BOS tokens">
+    BOS tokens inserted at document boundaries within packed sequences
+  </Step>
+</Steps>
+
+### Efficiency
+
+Packing achieves **~99% token utilization** compared to ~50-60% for naive batching:
+
+```python
+# Without packing (wasteful)
+# Sequence 1: [doc1_tokens... <pad> <pad> <pad>]  # 60% utilization
+# Sequence 2: [doc2_tokens... <pad> <pad>]        # 70% utilization
+
+# With best-fit packing (efficient)
+# Sequence 1: [<bos> doc1_tokens <bos> doc2_start]  # 99% utilization
+# Sequence 2: [<bos> doc2_end <bos> doc3_tokens]    # 99% utilization
+```
+
+## Distributed Loading
+
+Each rank loads a different subset of data:
+
+```python
+# Rank 0 processes shards: 0, 8, 16, 24, ...
+# Rank 1 processes shards: 1, 9, 17, 25, ...
+# ...
+# Rank 7 processes shards: 7, 15, 23, 31, ...
+```
+
+This ensures:
+- **No data duplication** across ranks
+- **Deterministic** training (same data order for same seed)
+- **Balanced** workload (each rank processes similar amount of data)
+
+## Data Shard Format
+
+Data shards are Zstandard-compressed text files:
+
+```bash
+# Example shard naming
+data/shard_000.zst
+data/shard_001.zst
+data/shard_002.zst
+# ...
+```
+
+Each shard contains:
+- Raw text documents separated by newlines
+- ~250M characters per shard (~100MB compressed)
+- UTF-8 encoding
+
+### Creating Shards
+
+See `dev/repackage_data_reference.py` for shard generation:
+
+```bash
+python dev/repackage_data_reference.py \
+    --input data/raw.txt \
+    --output data/ \
+    --shard-size 250000000
+```
+
+## Usage Example
+
+```python
+import torch
+from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
+from nanochat.tokenizer import get_tokenizer
+
+# Setup distributed training
+rank = int(os.environ.get("RANK", 0))
+world_size = int(os.environ.get("WORLD_SIZE", 1))
+
+# Load tokenizer
+tokenizer = get_tokenizer()
+
+# Find data shards
+import glob
+data_shards = sorted(glob.glob("~/.cache/nanochat/data/shard_*.zst"))
+
+# Create loader
+loader = tokenizing_distributed_data_loader_bos_bestfit(
+    data_shards=data_shards,
+    batch_size=32,
+    sequence_len=2048,
+    tokenizer=tokenizer,
+    world_size=world_size,
+    rank=rank
+)
+
+# Training loop
+for step, batch in enumerate(loader):
+    input_ids = batch["input_ids"].to("cuda")
+    
+    # Shift for autoregressive training
+    inputs = input_ids[:, :-1]
+    targets = input_ids[:, 1:]
+    
+    # Forward pass
+    logits, loss = model(inputs, targets=targets)
+    
+    # Backward pass
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+```
+
+## See Also
+
+- [Pretraining](/training/pretraining) - Using the dataloader for base model training
+- [Tokenizer](/api/tokenizer) - BPE tokenizer used by the dataloader

@@ -1,0 +1,176 @@
+---
+title: Tokenizer
+description: BPE tokenizer with GPT-4 style splitting pattern
+---
+
+## Overview
+
+The nanochat tokenizer is a Byte-Pair Encoding (BPE) tokenizer trained with a GPT-4 style splitting pattern.
+
+## get_tokenizer
+
+Returns the trained tokenizer instance.
+
+```python
+from nanochat.tokenizer import get_tokenizer
+
+tokenizer = get_tokenizer()
+```
+
+<ResponseField name="tokenizer" type="object">
+  Tokenizer instance with `encode()` and `decode()` methods
+</ResponseField>
+
+### Tokenizer Methods
+
+#### encode(text)
+
+Encodes text to token IDs:
+
+```python
+text = "Hello, world!"
+token_ids = tokenizer.encode(text)
+# Returns: list of integers
+```
+
+<ParamField path="text" type="str" required>
+  Input text to tokenize
+</ParamField>
+
+<ResponseField name="token_ids" type="list[int]">
+  List of token IDs
+</ResponseField>
+
+#### decode(token_ids)
+
+Decodes token IDs back to text:
+
+```python
+token_ids = [15496, 11, 1917, 0]
+text = tokenizer.decode(token_ids)
+# Returns: "Hello, world!"
+```
+
+<ParamField path="token_ids" type="list[int]" required>
+  Token IDs to decode
+</ParamField>
+
+<ResponseField name="text" type="str">
+  Decoded text string
+</ResponseField>
+
+## get_token_bytes
+
+Calculates the average number of bytes per token for a dataset.
+
+```python
+from nanochat.tokenizer import get_token_bytes
+
+avg_bytes = get_token_bytes(tokenizer)
+print(f"Average bytes per token: {avg_bytes:.3f}")
+```
+
+This metric is used for bits-per-byte evaluation. A well-trained tokenizer typically achieves ~3-4 bytes per token.
+
+<ResponseField name="avg_bytes" type="float">
+  Average number of bytes encoded per token
+</ResponseField>
+
+## Tokenizer Configuration
+
+### Vocabulary Size
+
+The default vocabulary size is **32,768** (2^15) tokens.
+
+### Special Tokens
+
+The tokenizer includes several special tokens:
+
+<ParamField path="<|endoftext|>" type="int" default="0">
+  End of text / padding token (same as GPT-2)
+</ParamField>
+
+<ParamField path="<|user|>" type="int">
+  User message marker for chat format
+</ParamField>
+
+<ParamField path="<|assistant|>" type="int">
+  Assistant message marker for chat format
+</ParamField>
+
+<ParamField path="<|end|>" type="int">
+  End of message marker
+</ParamField>
+
+<ParamField path="<|python|>" type="int">
+  Python code execution tool marker
+</ParamField>
+
+<ParamField path="<|/python|>" type="int">
+  End of Python code block
+</ParamField>
+
+### Splitting Pattern
+
+The tokenizer uses a **GPT-4 style splitting pattern** that:
+- Splits on whitespace boundaries
+- Keeps punctuation separate
+- Handles contractions properly
+- Preserves digits in groups
+
+This pattern improves tokenization quality compared to the original GPT-2 pattern.
+
+## Training the Tokenizer
+
+To train a new tokenizer from scratch:
+
+```bash
+python -m scripts.tok_train
+```
+
+The training process:
+1. Downloads ~2B characters of pretraining data
+2. Trains a BPE tokenizer with vocab size 32,768
+3. Uses the GPT-4 splitting pattern
+4. Saves the tokenizer to `~/.cache/nanochat/tokenizer.json`
+
+### Evaluation
+
+Evaluate tokenizer compression ratio:
+
+```bash
+python -m scripts.tok_eval
+```
+
+This reports:
+- **Compression ratio**: How many bytes each token represents on average
+- **Vocabulary statistics**: Token usage distribution
+- **Special token IDs**: Mapping of special tokens to IDs
+
+## Usage Example
+
+```python
+from nanochat.tokenizer import get_tokenizer, get_token_bytes
+
+# Load tokenizer
+tok = get_tokenizer()
+
+# Encode text
+text = "The quick brown fox jumps over the lazy dog."
+token_ids = tok.encode(text)
+print(f"Tokens: {token_ids}")
+print(f"Number of tokens: {len(token_ids)}")
+
+# Decode back
+recovered = tok.decode(token_ids)
+assert recovered == text
+
+# Check compression
+avg_bytes = get_token_bytes(tok)
+print(f"Bytes per token: {avg_bytes:.3f}")
+```
+
+## See Also
+
+- [Tokenization Guide](/training/tokenization) - Complete tokenizer training guide
+- [Base Training](/training/pretraining) - Using the tokenizer for pretraining

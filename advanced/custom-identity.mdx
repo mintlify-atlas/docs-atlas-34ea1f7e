@@ -1,0 +1,446 @@
+---
+title: Custom Identity
+description: Infuse your nanochat with personality using synthetic data
+---
+
+## Overview
+
+By default, nanochat is trained on general internet text and doesn't know anything about itself. You can teach it a custom identity and personality by generating synthetic conversation data and mixing it into the supervised fine-tuning (SFT) stage.
+
+This guide is based on the [Guide: infusing identity to your nanochat](https://github.com/karpathy/nanochat/discussions/139) discussion.
+
+## The Identity Pipeline
+
+```
+1. Create knowledge base
+   └─> Write self_knowledge.md with facts about your bot
+
+2. Generate synthetic conversations
+   └─> Use LLM to create training dialogs (dev/gen_synthetic_data.py)
+
+3. Train with custom data
+   └─> Mix synthetic data into SFT (tasks/customjson.py)
+
+4. Chat with your bot
+   └─> Verify it knows its identity
+```
+
+## Step 1: Create Knowledge Base
+
+Create a markdown file with comprehensive facts about your bot's identity:
+
+```markdown
+# knowledge/self_knowledge.md
+
+## Basic Identity
+- Name: MyBot
+- Creator: Your Name / Your Organization
+- Purpose: Helpful assistant specializing in [your domain]
+- Open source: Yes, MIT license
+- Repository: https://github.com/yourusername/mybot
+
+## Capabilities
+- Code generation in Python, JavaScript, Rust
+- Mathematical reasoning (with calculator tool)
+- Writing assistance and editing
+- Language: Best in English, understands others
+
+## Limitations  
+- No internet access (knowledge cutoff: [date])
+- Cannot remember previous conversations
+- Context window: 2048 tokens
+- May make mistakes or hallucinate
+
+## Technical Details
+- Architecture: GPT-style transformer
+- Parameters: ~570M (depth 26)
+- Training: Compute-optimal on FineWeb dataset
+- Hardware: Trained on 8xH100 GPUs
+- Training cost: ~$72 for GPT-2 capability
+
+## Personality
+- Helpful and enthusiastic about open source
+- Clear and concise communication
+- Honest about limitations
+- Slightly playful but professional
+```
+
+**Key principles**:
+- Be comprehensive - include everything the bot should know
+- Be accurate - only include facts you want the bot to believe
+- Include limitations - teach honest self-awareness
+
+You can use the README.md as a starting point:
+
+```bash
+cp README.md knowledge/self_knowledge.md
+# Edit to add personality and remove irrelevant sections
+```
+
+## Step 2: Generate Synthetic Conversations
+
+nanochat includes a synthetic data generator in `dev/gen_synthetic_data.py` that uses an external LLM to create training conversations.
+
+### Setup
+
+Get an API key from [OpenRouter](https://openrouter.ai/) and set it:
+
+```bash
+export OPENROUTER_API_KEY="your-key-here"
+# Or add to .env file
+echo "OPENROUTER_API_KEY=your-key-here" >> .env
+```
+
+### Generate Conversations
+
+```bash
+python dev/gen_synthetic_data.py \
+    --num=1000 \
+    --workers=4 \
+    --output=identity_conversations.jsonl
+```
+
+**Options**:
+- `--num`: Number of conversations to generate (default: 1000)
+- `--workers`: Parallel API requests (default: 4)
+- `--output`: Output file path (default: `identity_conversations.jsonl`)
+- `--append`: Append to existing file instead of overwriting
+- `--save-metadata`: Include generation metadata for debugging
+
+From `dev/gen_synthetic_data.py:403-412`.
+
+### How It Works
+
+The script ensures diversity through multiple dimensions:
+
+#### 1. Topic Categories
+
+```python
+topics = {
+    "identity": ["who/what is nanochat", "who created nanochat", ...],
+    "architecture": ["basic architecture", "RoPE", "Flash Attention", ...],
+    "training": ["training cost", "hardware needed", "Muon optimizer", ...],
+    "capabilities": ["what can nanochat do", "code generation", ...],
+    "limitations": ["what it can't do", "context limits", ...],
+    "comparisons": ["vs GPT-2", "vs ChatGPT", ...],
+}
+```
+
+From `dev/gen_synthetic_data.py:54-131`.
+
+#### 2. User Personas
+
+```python
+personas = [
+    "curious beginner who knows nothing about AI",
+    "ML researcher who wants technical depth",
+    "developer considering contributing",
+    "skeptic who doubts open source",
+    "computer science student learning about transformers",
+    ...
+]
+```
+
+From `dev/gen_synthetic_data.py:134-147`.
+
+#### 3. Conversation Dynamics
+
+```python
+dynamics = [
+    "short 2-turn Q&A",
+    "medium 4-turn with followup questions",
+    "deep 6-turn technical discussion",
+    "skeptical arc: user starts doubtful",
+    "learning journey: basic to complex",
+    ...
+]
+```
+
+From `dev/gen_synthetic_data.py:150-161`.
+
+#### 4. First Message Variety
+
+```python
+first_messages = {
+    "simple_greetings": ["hi", "hello", "hey", ...],
+    "greetings_with_name": ["Hi nanochat", "yo nanochat", ...],
+    "curious_openers": ["Hey, who are you?", "Hi, what is this?", ...],
+    "casual_informal": ["wassup", "yo lol", "hiii", ...],
+    "multilingual": ["hola", "bonjour", "konnichiwa", ...],
+    ...
+}
+```
+
+From `dev/gen_synthetic_data.py:164-213`.
+
+### Output Format
+
+Generated conversations are saved in JSONL format (one JSON object per line):
+
+```json
+[
+  {"role": "user", "content": "Hi! Who made you?"},
+  {"role": "assistant", "content": "I'm nanochat, created by Andrej Karpathy..."}
+]
+```
+
+Each line is a complete conversation (2-6 turns).
+
+### Style Guidelines
+
+The generator follows these principles (from `dev/gen_synthetic_data.py:238-246`):
+
+1. **Plain ASCII only** - No emojis or special characters
+2. **Natural conversation** - Real chat, not formal Q&A
+3. **Accurate facts** - Only from knowledge base
+4. **Appropriate depth** - Match user persona
+5. **Honest about limitations** - Clear about what it can't do
+6. **Personality** - Helpful, clear, slightly enthusiastic
+
+## Step 3: Train with Custom Data
+
+Mix your synthetic data into the SFT training using the `CustomJSON` task:
+
+```python
+# tasks/my_identity.py
+from tasks.customjson import CustomJSON
+from tasks.common import TaskMixture
+from tasks.smoltalk import SmolTalk
+
+MyIdentity = CustomJSON(
+    "identity_conversations.jsonl",
+    weighting=1.0,  # Same weight as SmolTalk
+)
+
+# Mix with general chat data
+MixedSFT = TaskMixture(
+    [SmolTalk, MyIdentity],
+    weights=[1.0, 1.0],  # Equal mix
+)
+```
+
+Then train SFT with your custom task:
+
+```bash
+python -m scripts.chat_sft \
+    --depth=26 \
+    --tasks=tasks.my_identity.MixedSFT \
+    --run="identity_sft"
+```
+
+### Mixing Ratios
+
+Balance general capability vs. identity:
+
+```python
+# Heavy identity (may lose general capability)
+TaskMixture([SmolTalk, MyIdentity], weights=[1.0, 5.0])
+
+# Balanced (recommended starting point)
+TaskMixture([SmolTalk, MyIdentity], weights=[1.0, 1.0])
+
+# Light identity (subtle personality)
+TaskMixture([SmolTalk, MyIdentity], weights=[5.0, 1.0])
+```
+
+Experiment to find the right balance. More identity data = stronger personality but may reduce general helpfulness.
+
+## Step 4: Verify Identity
+
+Chat with your model to verify it learned the identity:
+
+```bash
+python -m scripts.chat_web
+```
+
+Try these test questions:
+
+1. **Basic identity**: "Who are you?" / "What's your name?"
+2. **Creator**: "Who made you?" / "Who's your creator?"
+3. **Capabilities**: "What can you help me with?"
+4. **Limitations**: "Can you browse the internet?" / "Do you remember our past chats?"
+5. **Technical**: "How many parameters do you have?" / "What GPU were you trained on?"
+6. **Personality**: Does it sound like your intended personality?
+
+If responses are off, iterate:
+1. Update knowledge base with corrections
+2. Generate new synthetic data
+3. Retrain SFT with updated mix
+
+## Advanced Techniques
+
+### Multi-Language Identity
+
+Add multilingual greetings to support non-English users:
+
+```python
+# In gen_synthetic_data.py, the script already includes multilingual first messages
+first_messages = {
+    "multilingual": ["hola", "bonjour", "ciao", "hallo", ...],
+    ...
+}
+```
+
+The bot learns to acknowledge other languages but explain it works best in English.
+
+### Domain-Specific Identity
+
+Customize for specific domains:
+
+```markdown
+# knowledge/medical_bot.md
+
+## Specialization
+- Medical question answering assistant
+- Trained on PubMed and medical textbooks
+- NOT a replacement for professional medical advice
+
+## Capabilities
+- Explain medical terms and concepts
+- Discuss symptoms and potential causes
+- Provide general health information
+
+## Critical Limitations
+- Cannot diagnose conditions
+- Cannot prescribe medication  
+- Cannot replace doctor consultation
+- Always recommend seeing healthcare provider for concerns
+```
+
+### Personality Tuning
+
+Adjust personality through system prompts and examples:
+
+```python
+# More technical and concise
+personas = [
+    "experienced developer who wants minimal fluff",
+    "researcher who values precision and citations",
+]
+
+# More friendly and verbose
+personas = [
+    "beginner who needs encouragement and detailed explanations",
+    "casual user who likes friendly conversation",
+]
+```
+
+From `dev/gen_synthetic_data.py:134-147`, customize this list.
+
+### Quality Control
+
+Validate generated conversations:
+
+```python
+def validate_conversation(messages):
+    # Check minimum length
+    if len(messages) < 2:
+        raise ValueError("Conversation too short")
+    
+    # Check alternating roles
+    for i, message in enumerate(messages):
+        expected_role = "user" if i % 2 == 0 else "assistant"
+        if message['role'] != expected_role:
+            raise ValueError(f"Wrong role at position {i}")
+    
+    # Check non-empty content
+    if not message['content'].strip():
+        raise ValueError("Empty message")
+    
+    return True
+```
+
+From `dev/gen_synthetic_data.py:383-396`.
+
+## Cost Estimates
+
+Generating 1000 conversations:
+
+| Model | Cost per 1K conversations | Quality |
+|-------|---------------------------|----------|
+| GPT-4 Turbo | ~$5-10 | Excellent |
+| GPT-3.5 Turbo | ~$0.50-1 | Good |
+| Gemini Flash | ~$0.10-0.25 | Good (used in nanochat) |
+| Claude Sonnet | ~$3-6 | Excellent |
+
+The script uses `google/gemini-3-flash-preview` by default for cost-effectiveness.
+
+From `dev/gen_synthetic_data.py:301-306`:
+
+```python
+base_payload = {
+    "model": "google/gemini-3-flash-preview",
+    "temperature": 1.0,
+}
+```
+
+## Troubleshooting
+
+### "API key not found"
+
+Set your OpenRouter API key:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+```
+
+### Repetitive Conversations
+
+Increase diversity:
+- Add more topics to the topic list
+- Add more personas
+- Increase temperature (default: 1.0, try 1.2)
+- Generate multiple batches with different seeds
+
+### Bot Doesn't Remember Identity
+
+Increase identity data proportion:
+
+```python
+TaskMixture([SmolTalk, MyIdentity], weights=[1.0, 3.0])  # 75% identity
+```
+
+Or generate more conversations (1000 → 2000 → 5000).
+
+### Bot Hallucinates Facts
+
+Ensure knowledge base is accurate:
+
+```markdown
+# ✅ Good: Specific and verifiable
+- Training cost: $72 on 8xH100 for 3 hours
+- Parameters: 570M (depth 26 model)
+
+# ❌ Bad: Vague or wrong
+- Training cost: very cheap
+- Parameters: lots
+```
+
+### API Rate Limits
+
+Reduce parallel workers:
+
+```bash
+python dev/gen_synthetic_data.py --num=1000 --workers=2  # Down from 4
+```
+
+## Example: nanochat's Identity
+
+nanochat itself uses this technique! From the README.md (lines 89-91):
+
+> To customize your nanochat, see [Guide: infusing identity to your nanochat](https://github.com/karpathy/nanochat/discussions/139) in Discussions, which describes how you can tune your nanochat's personality through synthetic data generation and mixing that data into the SFT stage.
+
+The example script in `dev/gen_synthetic_data.py` shows how to teach nanochat about:
+- Its name and creator (Andrej Karpathy)
+- Architecture details (transformer, RoPE, Flash Attention)
+- Training cost ($72 for GPT-2 capability)
+- Capabilities and limitations
+- Open source nature (MIT license)
+
+## Further Reading
+
+- `dev/gen_synthetic_data.py` - Full synthetic data generation script
+- `tasks/customjson.py` - Load custom JSONL conversations for training
+- [Guide: infusing identity to your nanochat](https://github.com/karpathy/nanochat/discussions/139) - Original discussion
+- [OpenRouter](https://openrouter.ai/) - LLM API marketplace
+- `scripts/chat_sft.py` - Supervised fine-tuning script

@@ -1,0 +1,304 @@
+---
+title: 'Tasks'
+description: 'Task modules for evaluation and fine-tuning'
+---
+
+nanochat includes a comprehensive task system for evaluating and fine-tuning language models. Tasks provide datasets of conversations along with evaluation criteria.
+
+## Task Base Classes
+
+### Task
+
+The base class for all tasks provides a lightweight slicing interface over datasets.
+
+```python
+from tasks.common import Task
+```
+
+**Properties:**
+- `eval_type`: Returns either `'categorical'` for multiple choice tasks or `'generative'` for open-ended tasks
+- `start`, `stop`, `step`: Allow logical slicing over the dataset
+
+**Methods:**
+- `num_examples()`: Returns total number of examples in the dataset
+- `get_example(index)`: Returns a conversation dict with `messages` array
+- `evaluate(conversation, assistant_response)`: Returns evaluation score (typically 0 or 1)
+- `__len__()`: Returns the effective length considering slicing parameters
+- `__getitem__(index)`: Array-style access to conversations
+
+### TaskMixture
+
+Combines multiple tasks with deterministic shuffling for SFT training.
+
+```python
+from tasks.common import TaskMixture
+
+mixed = TaskMixture([task1, task2, task3])
+```
+
+Tasks are shuffled with a fixed seed (42) to mix examples throughout training. To oversample a task, include it multiple times in the list.
+
+### TaskSequence
+
+Sequentially concatenates tasks for curriculum-based training.
+
+```python
+from tasks.common import TaskSequence
+
+sequence = TaskSequence([task1, task2, task3])
+```
+
+## Evaluation Tasks
+
+### ARC
+
+Multiple choice science questions from Allen AI.
+
+```python
+from tasks.arc import ARC
+
+# Easy subset
+task = ARC(subset="ARC-Easy", split="validation")
+
+# Challenge subset
+task = ARC(subset="ARC-Challenge", split="test")
+```
+
+**Parameters:**
+- `subset`: `"ARC-Easy"` or `"ARC-Challenge"`
+- `split`: `"train"`, `"validation"`, or `"test"`
+
+**Eval type:** `categorical`
+
+**Dataset:** [allenai/ai2_arc](https://huggingface.co/datasets/allenai/ai2_arc)
+
+### MMLU
+
+Massive Multitask Language Understanding - multiple choice questions across 57 subjects.
+
+```python
+from tasks.mmlu import MMLU
+
+# All subjects
+task = MMLU(subset="all", split="validation")
+
+# Auxiliary training data
+task = MMLU(subset="auxiliary_train", split="train")
+```
+
+**Parameters:**
+- `subset`: `"all"` or `"auxiliary_train"`
+- `split`: `"train"`, `"validation"`, `"dev"`, or `"test"`
+
+**Eval type:** `categorical`
+
+**Subjects:** 57 topics including abstract_algebra, anatomy, astronomy, computer_science, mathematics, physics, and more
+
+**Dataset:** [cais/mmlu](https://huggingface.co/datasets/cais/mmlu)
+
+### GSM8K
+
+8,000 grade school math problems with step-by-step solutions using tool calls.
+
+```python
+from tasks.gsm8k import GSM8K
+
+task = GSM8K(subset="main", split="train")
+```
+
+**Parameters:**
+- `subset`: `"main"` or `"socratic"`
+- `split`: `"train"` or `"test"`
+
+**Eval type:** `generative`
+
+**Format:** Solutions use `<<expression=result>>` syntax for calculator tool calls. Final answers are marked with `#### number`.
+
+**Example:**
+```
+Question: Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?
+
+Answer: Weng earns 12/60 = $<<12/60=0.2>>0.2 per minute.
+Working 50 minutes, she earned 0.2 x 50 = $<<0.2*50=10>>10.
+#### 10
+```
+
+**Dataset:** [openai/gsm8k](https://huggingface.co/datasets/openai/gsm8k)
+
+### HumanEval
+
+Python coding benchmark (the name is a misnomer - it has nothing to do with humans).
+
+```python
+from tasks.humaneval import HumanEval
+
+task = HumanEval()
+```
+
+**Eval type:** `generative`
+
+**Format:** Each example contains a function signature with docstring (prompt), the canonical solution, and test cases. Evaluation executes the generated code against test cases.
+
+**Dataset:** [openai/openai_humaneval](https://huggingface.co/datasets/openai/openai_humaneval)
+
+## Fine-tuning Tasks
+
+### SmolTalk
+
+General conversational dataset from HuggingFace.
+
+```python
+from tasks.smoltalk import SmolTalk
+
+task = SmolTalk(split="train")  # 460K conversations
+task = SmolTalk(split="test")   # 24K conversations
+```
+
+**Parameters:**
+- `split`: `"train"` or `"test"`
+
+**Format:** Multi-turn conversations with optional system message. Conversations alternate between user and assistant roles.
+
+**Dataset:** [HuggingFaceTB/smol-smoltalk](https://huggingface.co/datasets/HuggingFaceTB/smol-smoltalk)
+
+### SpellingBee
+
+Teaches models to spell words and count letter occurrences.
+
+```python
+from tasks.spellingbee import SpellingBee
+
+task = SpellingBee(size=1000, split="train")
+```
+
+**Parameters:**
+- `size`: Number of examples to generate
+- `split`: `"train"` or `"test"`
+
+**Eval type:** `generative`
+
+**Purpose:** Smaller models struggle with character-level understanding since they work with tokens. This task helps by:
+1. Practicing word spelling (mapping tokens to character sequences)
+2. Counting letter occurrences using both manual and Python verification
+
+**Example question variations:**
+- "How many r are in strawberry?"
+- "Count the number of e in the word hello"
+- Includes Spanish, Chinese, Korean, French, German, and Japanese variations
+
+**Response format:** The assistant manually spells out the word, counts occurrences step-by-step, then verifies with Python:
+
+```python
+'strawberry'.count('r')
+```
+
+Final answer uses GSM8K-style `#### 3` format.
+
+### SimpleSpelling
+
+Condensed version focusing only on spelling practice.
+
+```python
+from tasks.spellingbee import SimpleSpelling
+
+task = SimpleSpelling(size=1000, split="train")
+```
+
+**Format:** User asks "Spell the word: example" and assistant responds "example:e,x,a,m,p,l,e"
+
+### CustomJSON
+
+Load custom conversations from JSONL files.
+
+```python
+from tasks.customjson import CustomJSON
+
+task = CustomJSON(filepath="data/conversations.jsonl")
+```
+
+**File format:** Each line is a JSON array of message objects:
+
+```json
+[{"role":"user","content":"Hi"},{"role":"assistant","content":"Hello"}]
+[{"role":"user","content":"Another conversation"},{"role":"assistant","content":"Yes"}]
+```
+
+**Requirements:**
+- At least 2 messages per conversation
+- Messages must alternate: user, assistant, user, assistant...
+- Each message needs `role` and `content` fields
+- Content must be a string
+
+## Helper Functions
+
+### render_mc
+
+Standard format for multiple choice questions:
+
+```python
+from tasks.common import render_mc
+
+question = "What is the capital of France?"
+letters = ("A", "B", "C", "D")
+choices = ["London", "Paris", "Berlin", "Madrid"]
+
+user_message = render_mc(question, letters, choices)
+```
+
+**Important design decisions:**
+1. Letter comes AFTER the choice for better token binding in smaller models
+2. No whitespace before the letter ("=A" not "= A") to match tokenization of assistant responses
+
+**Output format:**
+```
+Multiple Choice question: What is the capital of France?
+- London=A
+- Paris=B
+- Berlin=C
+- Madrid=D
+
+Respond only with the letter of the correct answer.
+```
+
+## Usage Examples
+
+### Training with task mixtures
+
+```python
+from tasks.smoltalk import SmolTalk
+from tasks.spellingbee import SpellingBee
+from tasks.common import TaskMixture
+
+# Oversample SpellingBee by including it twice
+task = TaskMixture([
+    SmolTalk(split="train"),
+    SpellingBee(size=5000, split="train"),
+    SpellingBee(size=5000, split="train"),
+])
+```
+
+### Slicing datasets
+
+```python
+from tasks.mmlu import MMLU
+
+# First 100 examples
+task = MMLU(subset="all", split="validation", start=0, stop=100)
+
+# Every 10th example
+task = MMLU(subset="all", split="validation", step=10)
+```
+
+### Custom evaluation
+
+```python
+task = GSM8K(subset="main", split="test")
+
+for i in range(10):
+    conversation = task[i]
+    # Generate response with your model
+    response = model.generate(conversation['messages'][0]['content'])
+    # Evaluate
+    score = task.evaluate(conversation, response)
+    print(f"Problem {i}: {'✓' if score else '✗'}")
+```

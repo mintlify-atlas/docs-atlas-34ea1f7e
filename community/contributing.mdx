@@ -1,0 +1,201 @@
+---
+title: 'Contributing'
+description: 'How to contribute to nanochat'
+---
+
+The goal of nanochat is to improve the state of the art in micro models that are accessible to work with end to end on budgets of **< $1000**.
+
+## Philosophy
+
+Accessibility is about overall cost but also about **cognitive complexity**. nanochat is not an exhaustively configurable LLM "framework":
+
+❌ No giant configuration objects  
+❌ No model factories  
+❌ No if-then-else monsters in the codebase
+
+✅ Single, cohesive, minimal codebase  
+✅ Readable and hackable  
+✅ Maximally forkable "strong baseline"  
+✅ Runs start to end to produce a ChatGPT model you can talk to
+
+## Current Focus
+
+The most interesting area of contribution is **speeding up the time to GPT-2** (achieving a CORE score above 0.256525). Currently this takes ~3 hours on an 8XH100 node, but we can improve it further by optimizing the pretraining stage.
+
+See the [Time-to-GPT-2 Leaderboard](/community/leaderboard) for details on how to participate.
+
+## Contribution Guidelines
+
+### Code Quality
+
+- Keep code minimal, readable, and hackable
+- Avoid adding abstraction layers or configuration complexity
+- Don't significantly bloat the codebase
+- Avoid esoteric or overly specialized optimizations
+
+### Principled Improvements
+
+nanochat cares about training an **entire miniseries of models**, not just targeting a single model size. Your changes must:
+
+✅ Generalize across different model depths (`--depth` parameter)  
+✅ Work for the full range of model sizes (not just d24 or d26)  
+✅ Maintain the "single dial of complexity" philosophy
+
+The depth parameter automatically determines all other hyperparameters (width, heads, learning rate, training horizon, weight decay, etc.) so models come out compute-optimal. Users shouldn't have to think about these details.
+
+### Submitting Changes
+
+1. **Test across depths:** Verify your change works for multiple `--depth` settings (e.g., d12, d16, d20, d24)
+
+2. **Measure improvements:** Show gains in:
+   - Training time (wall clock)
+   - Validation loss (`val_bpb`)
+   - CORE metric
+   - Efficiency (MFU, throughput)
+
+3. **Document your approach:** Explain the reasoning and any tradeoffs
+
+4. **Create a PR:** Include:
+   - Clear description of the change
+   - Performance improvements with evidence
+   - Any AI-assisted code (see policy below)
+
+### AI Contribution Policy
+
+**Disclosure required.** When submitting a PR, please declare:
+
+- Any parts with substantial LLM contribution
+- Code you have not written personally
+- Code you do not fully understand
+
+This helps maintain code quality and ensures contributors understand what they're submitting.
+
+## Development Workflow
+
+### Quick Iteration
+
+For rapid experimentation (~5 minutes per run), train a d12 model:
+
+```bash
+OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
+    --depth=12 \
+    --run="d12-experiment" \
+    --model-tag="d12_experiment" \
+    --core-metric-every=999999 \
+    --sample-every=-1 \
+    --save-every=-1
+```
+
+Change something in the code, re-run d12 (or d16), and see if it improves:
+
+- Validation loss curves
+- Training throughput
+- Final CORE score
+
+### Scaling Laws
+
+For deeper analysis, run scaling law experiments:
+
+```bash
+bash runs/scaling_laws.sh
+```
+
+See [Jan 7 miniseries v1](https://github.com/karpathy/nanochat/discussions/420) for documentation.
+
+### Full Miniseries
+
+To train the complete miniseries across all depths:
+
+```bash
+bash runs/miniseries.sh
+```
+
+### Monitoring
+
+Watch these WandB metrics:
+
+1. **Loss curves:** `val_bpb` vs. `step`, `total_training_time`, `total_training_flops`
+2. **Capability:** `core_metric` (DCLM CORE score)
+3. **Efficiency:** `train/mfu`, `train/tok_per_sec`, VRAM usage
+
+[Example run analysis](https://github.com/karpathy/nanochat/pull/498#issuecomment-3850720044)
+
+## Areas to Contribute
+
+### Pretraining Optimization
+
+- Training efficiency improvements
+- Better hyperparameter scaling across depths
+- Data loading and preprocessing speedups
+- Mixed precision strategies
+
+### Model Architecture
+
+- Architecture improvements that generalize
+- Attention mechanisms
+- Normalization strategies
+- Initialization methods
+
+### Evaluation
+
+- Additional task implementations
+- Improved evaluation metrics
+- Faster evaluation methods
+
+### Fine-tuning
+
+- SFT improvements
+- RL training enhancements
+- New capabilities (see [counting r in strawberry guide](https://github.com/karpathy/nanochat/discussions/164))
+
+### Documentation
+
+- Tutorials and guides
+- Example notebooks
+- Architecture explanations
+- Performance optimization tips
+
+## What NOT to Contribute
+
+❌ **Configuration complexity:** Giant YAML configs, complex factories, excessive abstraction
+
+❌ **Single-model optimizations:** Tweaks that only work for d24 or d26
+
+❌ **Framework bloat:** Trying to make nanochat support every possible use case
+
+❌ **Breaking changes:** Modifications that fundamentally alter the simplicity philosophy
+
+Remember: nanochat is intentionally **not** a framework. It's a strong baseline that should stay minimal and hackable.
+
+## Getting Help
+
+- **DeepWiki:** Use [DeepWiki](https://deepwiki.com/karpathy/nanochat) to ask questions about the repo
+- **Discussions:** [GitHub Discussions](https://github.com/karpathy/nanochat/discussions) for design questions and ideas
+- **Discord:** [#nanochat channel](https://discord.com/channels/1020383067459821711/1427295580895314031) for real-time help
+- **Issues:** GitHub Issues for bug reports
+
+## Community Resources
+
+- [Leaderboard](/community/leaderboard) - Time-to-GPT-2 competition
+- [Guides](/community/guides) - Tutorials and writeups
+- [GitHub Discussions](https://github.com/karpathy/nanochat/discussions) - Q&A and announcements
+
+## Recognition
+
+Contributors who improve the leaderboard get:
+
+- Credit in the leaderboard table
+- Recognition in commit history
+- Mention in related writeups and discussions
+
+## Acknowledgements
+
+nanochat benefits from the broader community:
+
+- Inspired by [nanoGPT](https://github.com/karpathy/nanoGPT) and [modded-nanoGPT](https://github.com/KellerJordan/modded-nanogpt)
+- Built on datasets from [HuggingFace](https://huggingface.co/)
+- Developed with compute from [Lambda](https://lambda.ai/service/gpu-cloud)
+- Guidance from Alec Radford
+- Repo management by [@svlandeg](https://github.com/svlandeg)
+
+Thank you to everyone who contributes to making powerful language models accessible!

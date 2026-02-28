@@ -1,0 +1,223 @@
+---
+title: Loss Evaluation
+description: Bits per byte (BPB) evaluation for comparing model performance
+---
+
+## Overview
+
+Bits per byte (BPB) is a tokenization-independent metric for evaluating language model loss. Unlike standard cross-entropy loss, BPB normalizes by the number of UTF-8 bytes in the target text, making it comparable across different tokenizers and vocabulary sizes.
+
+## Why Bits Per Byte?
+
+Standard loss has a critical limitation:
+
+- **Different vocab sizes produce different losses** - A 50K vocab tokenizer will have different average loss than a 100K vocab tokenizer, even for the same underlying model quality
+- **Can't compare apples to apples** - Changing tokenization breaks loss comparisons
+
+BPB solves this by normalizing loss by the actual information content (bytes) rather than token count.
+
+## How BPB is Calculated
+
+### Formula
+
+```python
+bpb = total_nats / (math.log(2) * total_bytes)
+```
+
+Where:
+- `total_nats` = Sum of cross-entropy losses across all tokens
+- `total_bytes` = Sum of UTF-8 byte lengths for all tokens
+- `math.log(2)` converts from nats (natural log) to bits (log base 2)
+
+### Step-by-Step Process
+
+1. **Compute per-token losses**
+   ```python
+   loss2d = model(x, y, loss_reduction='none')  # (B, T)
+   ```
+
+2. **Get byte lengths for each token**
+   ```python
+   token_bytes = get_token_bytes(device=device)  # (vocab_size,)
+   num_bytes = token_bytes[y]  # Look up bytes for target tokens
+   ```
+
+3. **Accumulate weighted losses**
+   ```python
+   total_nats += (loss2d * (num_bytes > 0)).sum()
+   total_bytes += num_bytes.sum()
+   ```
+
+4. **Convert to bits per byte**
+   ```python
+   bpb = total_nats / (math.log(2) * total_bytes)
+   ```
+
+## Implementation
+
+From `nanochat/loss_eval.py:evaluate_bpb`:
+
+```python
+@torch.no_grad()
+def evaluate_bpb(model, batches, steps, token_bytes):
+    total_nats = torch.tensor(0.0, dtype=torch.float32, device=model.get_device())
+    total_bytes = torch.tensor(0, dtype=torch.int64, device=model.get_device())
+    
+    batch_iter = iter(batches)
+    for _ in range(steps):
+        x, y = next(batch_iter)
+        loss2d = model(x, y, loss_reduction='none')  # (B, T)
+        loss2d = loss2d.view(-1)
+        y = y.view(-1)
+        
+        # Get byte lengths for each target token
+        num_bytes2d = token_bytes[y]
+        
+        # Accumulate (only count tokens with num_bytes > 0)
+        total_nats += (loss2d * (num_bytes2d > 0)).sum()
+        total_bytes += num_bytes2d.sum()
+    
+    # Aggregate across GPUs if distributed
+    if dist.is_initialized():
+        dist.all_reduce(total_nats, op=dist.ReduceOp.SUM)
+        dist.all_reduce(total_bytes, op=dist.ReduceOp.SUM)
+    
+    # Convert to BPB
+    bpb = total_nats.item() / (math.log(2) * total_bytes.item())
+    return bpb
+```
+
+## Token Bytes Tensor
+
+The `token_bytes` tensor maps each token ID to its UTF-8 byte length:
+
+```python
+from nanochat.tokenizer import get_token_bytes
+
+token_bytes = get_token_bytes(device=device)  # Shape: (vocab_size,)
+```
+
+**Special handling:**
+- Special tokens (e.g., `<|bos|>`, `<|eos|>`) have `token_bytes[id] = 0`
+- These are excluded from the metric (both from nats and bytes)
+- Tokens with `ignore_index = -1` are also excluded
+
+## Handling Special Cases
+
+### Ignored Tokens
+
+Some tokens may be masked out (e.g., `ignore_index = -1`):
+
+```python
+if (y.int() < 0).any():
+    # Don't index with negative values
+    valid = y >= 0
+    y_safe = torch.where(valid, y, torch.zeros_like(y))
+    num_bytes = torch.where(
+        valid,
+        token_bytes[y_safe],
+        torch.zeros_like(y, dtype=token_bytes.dtype)
+    )
+    total_nats += (loss2d * (num_bytes > 0)).sum()
+    total_bytes += num_bytes.sum()
+```
+
+### Special Tokens
+
+Tokens like `<|bos|>` automatically contribute 0 bytes and are excluded.
+
+## Running BPB Evaluation
+
+### Full Evaluation
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.base_eval \
+  --model-tag d24 \
+  --eval bpb \
+  --device-batch-size 32 \
+  --split-tokens 20971520
+```
+
+### Quick Evaluation
+
+```bash
+python -m scripts.base_eval \
+  --model-tag d24 \
+  --eval bpb \
+  --device-batch-size 16 \
+  --split-tokens 524288
+```
+
+## Parameters
+
+<ParamField path="device-batch-size" type="int" default="32">
+  Batch size per GPU
+</ParamField>
+
+<ParamField path="split-tokens" type="int" default="20971520">
+  Total tokens to evaluate per split (train/val). Must be divisible by `device-batch-size * sequence_len * num_gpus`
+</ParamField>
+
+## Interpreting Results
+
+### Training vs Validation BPB
+
+```bash
+train bpb: 1.234567
+val bpb: 1.456789
+```
+
+- **Lower is better** - Lower BPB means better compression/prediction
+- **Val > Train** - Expected, indicates some overfitting
+- **Val >> Train** - Significant overfitting, model not generalizing well
+- **Val ≈ Train** - Good generalization
+
+### Comparing Models
+
+Because BPB is tokenization-independent:
+
+```python
+model_a_bpb = 1.23  # 50K vocab
+model_b_bpb = 1.25  # 100K vocab
+# Model A is better, despite different vocab sizes!
+```
+
+## Distributed Evaluation
+
+BPB evaluation automatically distributes across GPUs:
+
+```python
+# Each GPU processes independent batches
+tokens_per_step = batch_size * seq_len * world_size
+steps = split_tokens // tokens_per_step
+
+# Results are aggregated with all_reduce
+dist.all_reduce(total_nats, op=dist.ReduceOp.SUM)
+dist.all_reduce(total_bytes, op=dist.ReduceOp.SUM)
+```
+
+## Example Output
+
+```
+================================================================================
+BPB Evaluation
+================================================================================
+train bpb: 1.234567
+val bpb: 1.456789
+```
+
+Results are also logged to the report:
+
+```python
+from nanochat.report import get_report
+
+get_report().log(section="Base model evaluation", data=[
+    {"model": "base_model (step 10000)",
+     "train bpb": 1.234567,
+     "val bpb": 1.456789}
+])
+```
+
+## Reference
+
+Implementation: `nanochat/loss_eval.py:evaluate_bpb`

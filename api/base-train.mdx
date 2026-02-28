@@ -1,0 +1,197 @@
+---
+title: base_train.py
+description: Pretrain a base language model from scratch
+---
+
+Pretrain a base language model from scratch using distributed training.
+
+## Usage
+
+```bash
+# Single GPU
+python -m scripts.base_train
+
+# Distributed (8 GPUs)
+torchrun --nproc_per_node=8 -m scripts.base_train
+
+# CPU/Macbook (small model)
+python -m scripts.base_train --depth=4 --max-seq-len=512 --device-batch-size=1 \
+  --eval-tokens=512 --core-metric-every=-1 --total-batch-size=512 --num-iterations=20
+```
+
+## Parameters
+
+### Logging
+
+<ParamField path="--run" type="str" default="dummy">
+  Weights & Biases run name. Use `'dummy'` to disable wandb logging.
+</ParamField>
+
+### Runtime
+
+<ParamField path="--device-type" type="str" default="">
+  Device type: `cuda`, `cpu`, or `mps`. Empty string enables autodetection.
+</ParamField>
+
+### FP8 Training
+
+<ParamField path="--fp8" type="bool" default="false">
+  Enable FP8 training. Requires H100+ GPU and torchao.
+</ParamField>
+
+<ParamField path="--fp8-recipe" type="str" default="tensorwise">
+  FP8 scaling recipe: `tensorwise` (faster, recommended) or `rowwise` (more accurate but slower).
+</ParamField>
+
+### Model Architecture
+
+<ParamField path="--depth" type="int" default="20">
+  Depth of the Transformer model (number of layers).
+</ParamField>
+
+<ParamField path="--aspect-ratio" type="int" default="64">
+  Model dimension is calculated as `depth * aspect_ratio`.
+</ParamField>
+
+<ParamField path="--head-dim" type="int" default="128">
+  Target head dimension for attention.
+</ParamField>
+
+<ParamField path="--max-seq-len" type="int" default="2048">
+  Maximum context length (sequence length).
+</ParamField>
+
+<ParamField path="--window-pattern" type="str" default="SSSL">
+  Sliding window pattern tiled across layers. `L` = full context, `S` = half context (e.g. `'SSL'`).
+</ParamField>
+
+### Training Horizon
+
+Only one is used, in order of precedence:
+
+<ParamField path="--num-iterations" type="int" default="-1">
+  Explicit number of optimization steps. `-1` = disabled.
+</ParamField>
+
+<ParamField path="--target-flops" type="float" default="-1.0">
+  Calculate num_iterations to reach target FLOPs. `-1` = disabled.
+</ParamField>
+
+<ParamField path="--target-param-data-ratio" type="float" default="10.5">
+  Calculate num_iterations to maintain data:param ratio. Chinchilla = 20. `-1` = disabled.
+</ParamField>
+
+### Optimization
+
+<ParamField path="--device-batch-size" type="int" default="32">
+  Per-device batch size. Reduce to 16, 8, 4, etc. if you encounter OOM errors.
+</ParamField>
+
+<ParamField path="--total-batch-size" type="int" default="-1">
+  Total batch size in tokens. Good value: 524288. `-1` = auto-compute optimal.
+</ParamField>
+
+<ParamField path="--embedding-lr" type="float" default="0.3">
+  Learning rate for embedding parameters (Adam).
+</ParamField>
+
+<ParamField path="--unembedding-lr" type="float" default="0.004">
+  Learning rate for unembedding parameters (Adam).
+</ParamField>
+
+<ParamField path="--weight-decay" type="float" default="0.2">
+  Cautious weight decay for the Muon optimizer (for weights).
+</ParamField>
+
+<ParamField path="--matrix-lr" type="float" default="0.02">
+  Learning rate for matrix parameters (Muon).
+</ParamField>
+
+<ParamField path="--scalar-lr" type="float" default="0.5">
+  Learning rate for scalars (resid_lambdas, x0_lambdas).
+</ParamField>
+
+<ParamField path="--adam-beta1" type="float" default="0.8">
+  Adam beta1 for embedding/unembedding.
+</ParamField>
+
+<ParamField path="--adam-beta2" type="float" default="0.95">
+  Adam beta2 for embedding/unembedding.
+</ParamField>
+
+<ParamField path="--warmup-ratio" type="float" default="0.0">
+  Ratio of iterations for learning rate warmup.
+</ParamField>
+
+<ParamField path="--warmdown-ratio" type="float" default="0.5">
+  Ratio of iterations for learning rate warmdown.
+</ParamField>
+
+<ParamField path="--final-lr-frac" type="float" default="0.0">
+  Final learning rate as fraction of initial learning rate.
+</ParamField>
+
+<ParamField path="--resume-from-step" type="int" default="-1">
+  Resume training from this step. `-1` = disabled.
+</ParamField>
+
+### Evaluation
+
+<ParamField path="--eval-every" type="int" default="250">
+  Evaluate validation bits-per-byte every N steps. `-1` = disabled.
+</ParamField>
+
+<ParamField path="--eval-tokens" type="int" default="20971520">
+  Number of tokens to evaluate validation loss on (default: 40*524288).
+</ParamField>
+
+<ParamField path="--core-metric-every" type="int" default="2000">
+  Evaluate CORE metric every N steps. `-1` = disabled.
+</ParamField>
+
+<ParamField path="--core-metric-max-per-task" type="int" default="500">
+  Maximum examples per task for CORE metric.
+</ParamField>
+
+<ParamField path="--sample-every" type="int" default="2000">
+  Sample from model every N steps. `-1` = disabled.
+</ParamField>
+
+<ParamField path="--save-every" type="int" default="-1">
+  Save checkpoints every N steps. `-1` = only save at end.
+</ParamField>
+
+### Output
+
+<ParamField path="--model-tag" type="str" default="None">
+  Override model tag for checkpoint directory name. If not provided, defaults to `d{depth}` (e.g. `d12`).
+</ParamField>
+
+## Examples
+
+### Full Training Run
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.base_train \
+  --run=my-experiment \
+  --depth=24 \
+  --max-seq-len=2048 \
+  --device-batch-size=32 \
+  --eval-every=500
+```
+
+### Resume Training
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.base_train \
+  --model-tag=d24 \
+  --resume-from-step=5000
+```
+
+### FP8 Training (H100+)
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.base_train \
+  --fp8 \
+  --fp8-recipe=tensorwise
+```

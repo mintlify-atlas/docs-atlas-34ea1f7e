@@ -1,0 +1,223 @@
+---
+title: 'Time-to-GPT-2 Leaderboard'
+description: 'Community leaderboard for training GPT-2 capability models'
+---
+
+The primary metric we care about is **"time to GPT-2"** - the wall clock time needed to outperform the GPT-2 (1.6B) CORE metric on an 8XH100 GPU node.
+
+## Background
+
+In 2019, OpenAI trained GPT-2 on 32 TPU v3 chips for 168 hours (7 days) at $8/hour/TPUv3, for a total cost of approximately **$43,000**. It achieved a CORE score of **0.256525**.
+
+The CORE score is an ensemble metric introduced in the DCLM paper that averages 22 evaluations including ARC, MMLU, and other benchmarks.
+
+Today, due to advances across the entire stack over 7 years, we can surpass GPT-2 capability for **well below $100** in under 3 hours.
+
+## Current Leaderboard
+
+| # | Time | val_bpb | CORE | Description | Date | Commit | Contributors |
+|---|------|---------|------|-------------|------|--------|-------------|
+| 0 | 168 hours | - | 0.2565 | Original OpenAI GPT-2 checkpoint | 2019 | - | OpenAI |
+| 1 | 3.04h | 0.74833 | 0.2585 | d24 baseline, slightly overtrained | Jan 29 2026 | 348fbb3 | @karpathy |
+| 2 | 2.91h | 0.74504 | 0.2578 | d26 slightly undertrained + fp8 | Feb 2 2026 | a67eba3 | @karpathy |
+| 3 | 2.76h | 0.74645 | 0.2602 | bump total batch size to 1M tokens | Feb 5 2026 | 2c062aa | @karpathy |
+
+At current rates (~$3/GPU/hr), an 8XH100 node costs ~$24/hr, so 3 hours is approximately **$72**. On spot instances, this can drop to ~**$20**.
+
+## How to Participate
+
+The script [runs/speedrun.sh](https://github.com/karpathy/nanochat/blob/main/runs/speedrun.sh) always implements the current state of the art.
+
+### Step 1: Train Your Model
+
+Tune the `base_train` command for your run. Example configuration:
+
+```bash
+OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
+    --depth=26 \
+    --run="d26-feb2-fp8-ratio8.25" \
+    --model-tag="d26_feb2_fp8_ratio8.25" \
+    --device-batch-size=16 \
+    --sample-every=-1 \
+    --save-every=-1 \
+    --core-metric-max-per-task=-1 \
+    --core-metric-every=999999 \
+    --target-param-data-ratio=8.25 \
+    --fp8
+```
+
+### Key Parameters
+
+- **`--depth`**: Controls the size of the Transformer (GPT-2 is approximately d24-d26)
+- **`--run`**: WandB run name for tracking
+- **`--model-tag`**: Checkpoint location on disk
+- **`--device-batch-size`**: Ideally 32 for sequence length 2048. If OOM, reduce to 16, 8, etc. (use powers of 2). The script automatically uses gradient accumulation to maintain the target total batch size.
+- **`--sample-every=-1`**: Turns off periodic sampling
+- **`--core-metric-max-per-task=-1`**: Runs the entire CORE eval
+- **`--core-metric-every=999999`**: Hacky way to run CORE eval only once at the end
+- **`--target-param-data-ratio`**: Controls training horizon (tokens = params × this ratio)
+  - Default optimal ratio is 10.5 (compute-optimal)
+  - GPT-2 capability is between d24 and d26, so you can overtrain d24 or undertrain d26
+  - Example: 8.25 undertrains d26 to hit GPT-2 exactly
+- **`--fp8`**: Enables fp8 training using torchao (Hopper GPUs only)
+  - Each step is slightly lower quality but much faster, net positive
+  - Without fp8, training in bfloat16 produces slightly stronger models
+  - If your GPU doesn't support fp8, omit this flag
+
+### Step 2: Record Results
+
+After ~3 hours, you'll see output like:
+
+```
+wandb: Run summary:
+wandb:          core_metric 0.25851
+wandb:                 step 16704
+wandb: total_training_flops 4.330784131228946e+19
+wandb:  total_training_time 10949.46713
+```
+
+**Requirements:**
+- CORE metric must exceed **0.256525** (GPT-2's score)
+- Report `total_training_time` in seconds (excludes eval/logging overhead)
+  - Example: 10949 seconds ≈ 3.04 hours
+- Also note and report validation bpb (CORE can be noisy)
+
+### Step 3: Submit to Leaderboard
+
+If you beat the current record, create a PR with your changes.
+
+Get your commit hash:
+
+```bash
+git log -1 --format="%h"
+```
+
+**Acceptance criteria:**
+
+✅ **Technical:**
+- Outperforms GPT-2 CORE score (>0.256525)
+- Faster than current leaderboard record
+- Principled enough to generalize across model depths (not just tuned for one size)
+
+✅ **Code quality:**
+- Clean, readable implementation
+- Doesn't significantly bloat the codebase
+- Not too esoteric or hacky
+
+**nanochat philosophy:** We care about training an entire miniseries of models, not just one. Your improvement must work across different `--depth` settings.
+
+## Run Summaries
+
+### Run 1: Baseline (Jan 29 2026)
+
+**Commit:** 348fbb3
+
+```bash
+OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
+    --depth=24 \
+    --run=d24-jan29 \
+    --model-tag=d24_jan29 \
+    --device-batch-size=16 \
+    --sample-every=-1 \
+    --save-every=-1 \
+    --core-metric-max-per-task=-1 \
+    --core-metric-every=3000 \
+    --target-param-data-ratio=12
+```
+
+**Results:**
+- Time: **3.04 hours**
+- CORE: 0.25851
+- Validation bpb: 0.74833
+- Total FLOPs: 4.33e19
+
+**Details:** [Beating GPT-2 for &lt;&lt;$100: the nanochat journey](https://github.com/karpathy/nanochat/discussions/481)
+
+### Run 2: FP8 Training (Feb 2 2026)
+
+**Commit:** a67eba3
+
+```bash
+OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
+    --depth=26 \
+    --run="d26-feb2-fp8-ratio8.5" \
+    --model-tag="d26_feb2_fp8_ratio8.5" \
+    --device-batch-size=16 \
+    --sample-every=-1 \
+    --save-every=-1 \
+    --core-metric-max-per-task=-1 \
+    --core-metric-every=999999 \
+    --target-param-data-ratio=8.5 \
+    --fp8
+```
+
+**Results:**
+- Time: **2.91 hours** (4.3% improvement)
+- CORE: 0.2578
+- Validation bpb: 0.74504
+
+**Key innovation:** Added `--fp8` flag to enable fp8 training using torchao with tensorwise fp8 scaling. All Linear layers (except gates) run in fp8.
+
+### Run 3: Batch Size Scaling (Feb 5 2026)
+
+**Commit:** 2c062aa
+
+```bash
+OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
+    --depth=26 \
+    --run="d26_feb4_double_batch_ratio8.25" \
+    --model-tag="d26_feb4_double_batch_ratio8.25" \
+    --device-batch-size=16 \
+    --total-batch-size=1048576 \
+    --sample-every=-1 \
+    --save-every=-1 \
+    --core-metric-max-per-task=-1 \
+    --core-metric-every=999999 \
+    --target-param-data-ratio=8.25 \
+    --fp8
+```
+
+**Results:**
+- Time: **2.76 hours** (5.2% improvement over Run 2)
+- CORE: 0.26024
+- Validation bpb: 0.74645
+
+**Key innovation:** Doubled batch size from 0.5M to 1M tokens. The original 0.5M was tuned for d12, but larger models (d26) prefer larger batches. Implemented principled auto-scaling of batch size by depth.
+
+**Details:** See [dev/LOG.md](https://github.com/karpathy/nanochat/blob/main/dev/LOG.md) entry "2026-02-05: Auto Batch Size Scaling"
+
+## Tips for Researchers
+
+### Quick Experimentation
+
+For ~5 minute runs, train a d12 (GPT-1 sized) model:
+
+```bash
+OMP_NUM_THREADS=1 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
+    --depth=12 \
+    --run="d12" \
+    --model-tag="d12" \
+    --core-metric-every=999999 \
+    --sample-every=-1 \
+    --save-every=-1
+```
+
+### What to Monitor
+
+1. **Validation loss:** `val_bpb` as a function of `step`, `total_training_time`, and `total_training_flops`
+2. **Final capability:** `core_metric` (DCLM CORE score)
+3. **Efficiency:** VRAM utilization, `train/mfu` (Model FLOPs Utilization), `train/tok_per_sec`
+
+### Hardware Notes
+
+- **8XA100:** Works fine, slightly slower than H100
+- **Single GPU:** Works with gradient accumulation (8x longer)
+- **Less VRAM:** Reduce `--device-batch-size` to 16, 8, 4, 2, or 1
+- **Non-CUDA:** Code is mostly vanilla PyTorch (xpu, mps, etc. should work with potential sharp edges)
+
+## Related Resources
+
+- [Main nanochat README](https://github.com/karpathy/nanochat)
+- [Jan 7 miniseries v1](https://github.com/karpathy/nanochat/discussions/420) - Documentation on nanochat miniseries
+- [Beating GPT-2 for &lt;&lt;$100](https://github.com/karpathy/nanochat/discussions/481) - Detailed writeup of Run 1
+- [dev/LOG.md](https://github.com/karpathy/nanochat/blob/main/dev/LOG.md) - Development log with detailed explanations

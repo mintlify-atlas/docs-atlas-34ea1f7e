@@ -1,0 +1,189 @@
+---
+title: chat_sft.py
+description: Supervised fine-tuning (SFT) for chat models
+---
+
+Supervised fine-tuning script that converts a pretrained base model into a conversational chat model.
+
+## Usage
+
+```bash
+# Single GPU
+python -m scripts.chat_sft
+
+# Distributed (8 GPUs)
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --device-batch-size=16
+```
+
+## Parameters
+
+### Logging
+
+<ParamField path="--run" type="str" default="dummy">
+  Weights & Biases run name. Use `'dummy'` to disable wandb logging.
+</ParamField>
+
+### Runtime
+
+<ParamField path="--device-type" type="str" default="">
+  Device type: `cuda`, `cpu`, or `mps`. Empty string enables autodetection.
+</ParamField>
+
+### Model Loading
+
+<ParamField path="--model-tag" type="str" default="None">
+  Model tag to load from base checkpoints (e.g. `d24`).
+</ParamField>
+
+<ParamField path="--model-step" type="int" default="None">
+  Model step to load. If not specified, loads the last checkpoint.
+</ParamField>
+
+<ParamField path="--load-optimizer" type="int" default="1">
+  Warm-start optimizer from pretrained checkpoint. `0` = no, `1` = yes.
+</ParamField>
+
+### Training Horizon
+
+<ParamField path="--num-iterations" type="int" default="-1">
+  Number of optimization steps. `-1` = full epoch through the training dataset.
+</ParamField>
+
+### Batch Sizes
+
+Defaults are inherited from the pretrained checkpoint if not specified.
+
+<ParamField path="--max-seq-len" type="int" default="None">
+  Maximum context length. Default: inherit from pretrain.
+</ParamField>
+
+<ParamField path="--device-batch-size" type="int" default="None">
+  Per-device batch size. Default: inherit from pretrain.
+</ParamField>
+
+<ParamField path="--total-batch-size" type="int" default="None">
+  Total batch size in tokens. Default: inherit from pretrain.
+</ParamField>
+
+### Optimization
+
+Defaults are inherited from the pretrained checkpoint if not specified.
+
+<ParamField path="--embedding-lr" type="float" default="None">
+  Learning rate for embedding parameters (Adam). Default: inherit from pretrain.
+</ParamField>
+
+<ParamField path="--unembedding-lr" type="float" default="None">
+  Learning rate for unembedding parameters (Adam). Default: inherit from pretrain.
+</ParamField>
+
+<ParamField path="--matrix-lr" type="float" default="None">
+  Learning rate for matrix parameters (Muon). Default: inherit from pretrain.
+</ParamField>
+
+<ParamField path="--init-lr-frac" type="float" default="0.8">
+  Initial learning rate as fraction of base learning rate.
+</ParamField>
+
+<ParamField path="--warmup-ratio" type="float" default="0.0">
+  Ratio of iterations for learning rate warmup.
+</ParamField>
+
+<ParamField path="--warmdown-ratio" type="float" default="0.5">
+  Ratio of iterations for learning rate warmdown.
+</ParamField>
+
+<ParamField path="--final-lr-frac" type="float" default="0.0">
+  Final learning rate as fraction of initial learning rate.
+</ParamField>
+
+### Evaluation
+
+<ParamField path="--eval-every" type="int" default="200">
+  Evaluate validation bits-per-byte every N steps. `-1` = disabled.
+</ParamField>
+
+<ParamField path="--eval-tokens" type="int" default="20971520">
+  Number of tokens to evaluate validation loss on (default: 40*524288).
+</ParamField>
+
+<ParamField path="--chatcore-every" type="int" default="200">
+  Evaluate ChatCORE metric every N steps. `-1` = disabled.
+</ParamField>
+
+<ParamField path="--chatcore-max-cat" type="int" default="-1">
+  Maximum problems per categorical task for ChatCORE. `-1` = all problems.
+</ParamField>
+
+<ParamField path="--chatcore-max-sample" type="int" default="24">
+  Maximum problems per generative task for ChatCORE.
+</ParamField>
+
+### Data Mixture
+
+<ParamField path="--mmlu-epochs" type="int" default="3">
+  Number of epochs of MMLU in training mixture (teaches multiple choice).
+</ParamField>
+
+<ParamField path="--gsm8k-epochs" type="int" default="4">
+  Number of epochs of GSM8K in training mixture (teaches math and tool use).
+</ParamField>
+
+## Training Mixture
+
+The SFT script uses a carefully balanced mixture of tasks:
+
+- **SmolTalk** (460K rows): General conversations
+- **Identity Conversations** (1K rows × 2 epochs): Synthetic identity conversations
+- **MMLU** (100K rows × `--mmlu-epochs`): Multiple choice questions
+- **GSM8K** (8K rows × `--gsm8k-epochs`): Math word problems with tool use
+- **Simple Spelling** (200K rows): Basic spelling tasks
+- **Spelling Bee** (80K rows): Character counting tasks
+
+## Examples
+
+### Basic SFT Training
+
+```bash
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft \
+  --run=my-sft-run \
+  --model-tag=d24
+```
+
+### Custom Data Mixture
+
+```bash
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft \
+  --model-tag=d24 \
+  --mmlu-epochs=5 \
+  --gsm8k-epochs=2
+```
+
+### Override Learning Rate
+
+```bash
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft \
+  --model-tag=d24 \
+  --matrix-lr=0.01 \
+  --init-lr-frac=0.5
+```
+
+### Fixed Number of Iterations
+
+```bash
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft \
+  --model-tag=d24 \
+  --num-iterations=1000
+```
+
+## ChatCORE Metric
+
+The ChatCORE metric evaluates the chat model across 6 tasks:
+- **ARC-Easy** (categorical)
+- **ARC-Challenge** (categorical)
+- **MMLU** (categorical)
+- **GSM8K** (generative)
+- **HumanEval** (generative)
+- **SpellingBee** (generative)
+
+Like CORE, it uses centered accuracy to normalize performance from 0 (random) to 1 (perfect).

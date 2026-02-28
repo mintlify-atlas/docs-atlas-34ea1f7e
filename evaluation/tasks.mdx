@@ -1,0 +1,456 @@
+---
+title: Evaluation Tasks
+description: Overview of all evaluation tasks for chat models
+---
+
+## Overview
+
+Nanochat supports multiple evaluation tasks covering reasoning, coding, and general conversation. Each task is used to measure specific capabilities of the chat model.
+
+## Task Types
+
+Tasks fall into two evaluation categories:
+
+### Categorical
+Model selects from predefined answer choices. Evaluation checks logits at specific positions without generation.
+
+**Tasks:** ARC-Easy, ARC-Challenge, MMLU
+
+### Generative
+Model generates free-form responses. Evaluation checks if the generation satisfies success criteria.
+
+**Tasks:** GSM8K, HumanEval, SpellingBee, SmolTalk
+
+## Available Tasks
+
+### ARC (AI2 Reasoning Challenge)
+
+**Type:** Categorical  
+**Source:** `allenai/ai2_arc`  
+**Subsets:** ARC-Easy, ARC-Challenge  
+**Random Baseline:** 25% (4-choice multiple choice)
+
+#### Description
+Science questions from standardized tests. ARC-Easy contains simpler questions, while ARC-Challenge focuses on questions that require deeper reasoning.
+
+#### Implementation
+
+From `tasks/arc.py:ARC`:
+
+```python
+from tasks.arc import ARC
+
+# Load the task
+task = ARC(subset="ARC-Easy", split="test")
+
+# Get an example
+conversation = task[0]
+# {
+#   "messages": [
+#     {"role": "user", "content": "Question: ...\n\nA) ...\nB) ...\nC) ...\nD) ..."},
+#     {"role": "assistant", "content": "A"}
+#   ],
+#   "letters": ["A", "B", "C", "D"]
+# }
+
+# Evaluate
+is_correct = task.evaluate(conversation, "A")
+```
+
+#### Evaluation Method
+
+```python
+def evaluate(self, conversation, assistant_response):
+    assistant_message = conversation['messages'][-1]['content']
+    return assistant_response == assistant_message
+```
+
+---
+
+### MMLU (Massive Multitask Language Understanding)
+
+**Type:** Categorical  
+**Source:** `cais/mmlu`  
+**Subsets:** all (57 subjects), auxiliary_train  
+**Random Baseline:** 25% (4-choice multiple choice)
+
+#### Description
+Covers 57 subjects including STEM, humanities, social sciences, and more. Tests world knowledge and reasoning across diverse domains.
+
+**Subjects include:** abstract_algebra, anatomy, astronomy, business_ethics, clinical_knowledge, college_biology, computer_security, medical_genetics, professional_law, world_religions, and 47 more.
+
+#### Implementation
+
+From `tasks/mmlu.py:MMLU`:
+
+```python
+from tasks.mmlu import MMLU
+
+# Load all subjects
+task = MMLU(subset="all", split="test")
+
+# Get an example
+conversation = task[0]
+# {
+#   "messages": [...],
+#   "subject": "college_biology",
+#   "letters": ("A", "B", "C", "D")
+# }
+```
+
+#### Evaluation Method
+
+Identical to ARC - checks if predicted letter matches the ground truth.
+
+---
+
+### GSM8K (Grade School Math)
+
+**Type:** Generative  
+**Source:** `openai/gsm8k`  
+**Random Baseline:** 0% (open-ended)
+
+#### Description
+Grade-school level math word problems. Solutions use tool calls (calculator) embedded in reasoning steps.
+
+#### Example Format
+
+```
+Question:
+Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?
+
+Answer:
+Weng earns 12/60 = $<<12/60=0.2>>0.2 per minute.
+Working 50 minutes, she earned 0.2 x 50 = $<<0.2*50=10>>10.
+#### 10
+```
+
+#### Implementation
+
+From `tasks/gsm8k.py:GSM8K`:
+
+```python
+from tasks.gsm8k import GSM8K
+
+task = GSM8K(subset="main", split="test")
+
+# Conversations include tool calls
+conversation = task[0]
+# {
+#   "messages": [
+#     {"role": "user", "content": "Weng earns $12..."},
+#     {"role": "assistant", "content": [
+#       {"type": "text", "text": "Weng earns 12/60 = $"},
+#       {"type": "python", "text": "12/60"},
+#       {"type": "python_output", "text": "0.2"},
+#       {"type": "text", "text": "0.2 per minute...\n#### 10"}
+#     ]}
+#   ]
+# }
+```
+
+#### Evaluation Method
+
+```python
+def evaluate(self, conversation, assistant_response):
+    # Extract ground truth after #### marker
+    ref_num = extract_answer(ground_truth)  # e.g., "10"
+    # Extract prediction after #### marker
+    pred_num = extract_answer(assistant_response)
+    # Compare
+    return int(pred_num == ref_num)
+```
+
+Answer extraction regex: `#### (\-?[0-9\.\,]+)`
+
+---
+
+### HumanEval
+
+**Type:** Generative  
+**Source:** `openai/openai_humaneval`  
+**Random Baseline:** 0% (open-ended)
+
+#### Description
+Python programming problems. Model completes function implementations and is evaluated by executing test cases.
+
+#### Implementation
+
+From `tasks/humaneval.py:HumanEval`:
+
+```python
+from tasks.humaneval import HumanEval
+
+task = HumanEval()
+
+conversation = task[0]
+# {
+#   "messages": [
+#     {"role": "user", "content": "def add(a, b):\n    ..."},
+#     {"role": "assistant", "content": "def add(a, b):\n    return a + b"}
+#   ],
+#   "entry_point": "add",
+#   "test": "def check(candidate): ..."
+# }
+```
+
+#### Evaluation Method
+
+```python
+def evaluate(self, conversation, completion):
+    # Extract imports from prompt
+    imports = extract_imports(conversation['messages'][0]['content'])
+    # Extract code from completion (handles markdown blocks)
+    code = extract_program(completion)
+    # Build full program
+    program = (
+        imports + "\n\n" +
+        code + "\n\n" +
+        conversation['test'] + "\n" +
+        f"check({conversation['entry_point']})"
+    )
+    # Execute and check if it passes
+    result = execute_code(program)
+    return result.success
+```
+
+Handles code wrapped in markdown:
+- ` ```python\n...\n``` `
+- ` ```\n...\n``` `
+- Plain code without markdown blocks
+
+---
+
+### SpellingBee
+
+**Type:** Generative  
+**Source:** Synthetic (generated from `dwyl/english-words`)  
+**Random Baseline:** 0% (open-ended)
+
+#### Description
+Counting letter occurrences in words. Teaches models to spell words correctly and verify with Python.
+
+#### Example
+
+```
+User: How many r are in strawberry?
+
+Assistant:
+We are asked to find the number 'r' in the word 'strawberry'. Let me try a manual approach first.
+
+First spell the word out:
+strawberry:s,t,r,a,w,b,e,r,r,y
+
+Then count the occurrences of 'r':
+1:s
+2:t
+3:r hit! count=1
+4:a
+5:w
+6:b
+7:e
+8:r hit! count=2
+9:r hit! count=3
+10:y
+
+This gives us 3.
+
+Let me double check this using Python:
+
+<<'strawberry'.count('r')=3>>
+
+Python gives us 3.
+
+My final answer is:
+
+#### 3
+```
+
+#### Implementation
+
+From `tasks/spellingbee.py:SpellingBee`:
+
+```python
+from tasks.spellingbee import SpellingBee
+
+task = SpellingBee(size=256, split="test")
+
+# Examples are procedurally generated
+conversation = task[0]
+# User messages have variations (30+ templates, multilingual)
+# Assistant responses include manual counting + Python verification
+```
+
+#### User Message Templates
+
+Highly varied for robustness (45+ variations):
+- "How many r are in strawberry"
+- "Count the number of r in strawberry"
+- "¿Cuántas r hay en strawberry?" (Spanish)
+- "strawberryに rは何個ありますか" (Japanese)
+- With/without quotes, question marks, capitalization
+
+#### Evaluation Method
+
+Identical to GSM8K - extracts answer after `####` marker.
+
+---
+
+### SmolTalk
+
+**Type:** Training only (not evaluated)  
+**Source:** `HuggingFaceTB/smol-smoltalk`  
+**Splits:** train (460K), test (24K)
+
+#### Description
+General conversational dataset for teaching chat behavior. Used during supervised fine-tuning, not for evaluation.
+
+#### Implementation
+
+From `tasks/smoltalk.py:SmolTalk`:
+
+```python
+from tasks.smoltalk import SmolTalk
+
+task = SmolTalk(split="train")
+
+conversation = task[0]
+# {
+#   "messages": [
+#     {"role": "system", "content": "..."},  # Optional
+#     {"role": "user", "content": "..."},
+#     {"role": "assistant", "content": "..."},
+#     {"role": "user", "content": "..."},
+#     {"role": "assistant", "content": "..."},
+#     # ... alternating user/assistant
+#   ]
+# }
+```
+
+#### Format Requirements
+
+- Optional system message at the beginning
+- At least 2 messages after system (user + assistant minimum)
+- Strict alternation: user, assistant, user, assistant, ...
+- All content must be strings (no multi-part messages)
+
+---
+
+## Running Evaluations
+
+### Single Task
+
+```bash
+python -m scripts.chat_eval \
+  --source sft \
+  --task-name ARC-Easy
+```
+
+### Multiple Tasks
+
+```bash
+python -m scripts.chat_eval \
+  --source sft \
+  --task-name "ARC-Easy|MMLU|GSM8K"
+```
+
+### All Tasks
+
+```bash
+python -m scripts.chat_eval --source sft
+```
+
+### Distributed Evaluation (8 GPUs)
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.chat_eval \
+  --source sft \
+  --task-name "ARC-Easy|ARC-Challenge|MMLU|GSM8K|HumanEval"
+```
+
+### Quick Evaluation
+
+```bash
+python -m scripts.chat_eval \
+  --source sft \
+  --task-name ARC-Easy \
+  --max-problems 100
+```
+
+## Evaluation Parameters
+
+### For Categorical Tasks
+
+<ParamField path="batch-size" type="int" default="8">
+  Number of problems to process in parallel
+</ParamField>
+
+### For Generative Tasks
+
+<ParamField path="num-samples" type="int" default="1">
+  Number of completions to generate per problem (pass@k)
+</ParamField>
+
+<ParamField path="max-new-tokens" type="int" default="512">
+  Maximum tokens to generate per completion
+</ParamField>
+
+<ParamField path="temperature" type="float" default="0.0">
+  Sampling temperature (0 = greedy)
+</ParamField>
+
+<ParamField path="top-k" type="int" default="50">
+  Top-k sampling parameter
+</ParamField>
+
+## ChatCORE Metric
+
+When all 6 evaluation tasks are run, a ChatCORE metric is computed (similar to CORE for base models):
+
+```python
+# Center each task against its random baseline
+for task_name, acc in results.items():
+    baseline_acc = baseline_accuracies[task_name]
+    centered_acc = (acc - baseline_acc) / (1.0 - baseline_acc)
+    centered_mean += centered_acc
+
+chatcore_metric = centered_mean / len(results)
+```
+
+**ChatCORE ranges from 0.0 (random) to 1.0 (perfect)**
+
+## Task Common Interface
+
+All tasks inherit from `tasks.common.Task`:
+
+```python
+class Task:
+    @property
+    def eval_type(self):
+        """Return 'categorical' or 'generative'"""
+        raise NotImplementedError
+    
+    def num_examples(self):
+        """Total number of examples"""
+        raise NotImplementedError
+    
+    def get_example(self, index):
+        """Get example at index as a conversation dict"""
+        raise NotImplementedError
+    
+    def evaluate(self, conversation, assistant_response):
+        """Return True/False or 0/1 for correctness"""
+        raise NotImplementedError
+    
+    def __len__(self):
+        return self.num_examples()
+    
+    def __getitem__(self, index):
+        return self.get_example(index)
+```
+
+## Reference
+
+- Base evaluation: `scripts/base_eval.py`
+- Chat evaluation: `scripts/chat_eval.py`
+- Task implementations: `tasks/*.py`

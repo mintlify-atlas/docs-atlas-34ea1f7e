@@ -1,0 +1,182 @@
+---
+title: chat_eval.py
+description: Evaluate chat models on various benchmarks
+---
+
+Evaluation script for chat models supporting both categorical and generative tasks.
+
+## Usage
+
+```bash
+# Single task
+python -m scripts.chat_eval -i sft -a ARC-Easy
+
+# Distributed (8 GPUs)
+torchrun --nproc_per_node=8 -m scripts.chat_eval -- -i sft -a ARC-Easy
+
+# Multiple tasks
+python -m scripts.chat_eval -i rl -a "MMLU|GSM8K|HumanEval"
+
+# All tasks
+python -m scripts.chat_eval -i sft -a all
+```
+
+## Parameters
+
+### Required
+
+<ParamField path="-i, --source" type="str" required>
+  Source of the model: `sft` or `rl`.
+</ParamField>
+
+### Task Selection
+
+<ParamField path="-a, --task-name" type="str" default="None">
+  Task name to evaluate. Use `|` to separate multiple tasks. If not specified, evaluates all tasks.
+  
+  Available tasks:
+  - `ARC-Easy` (categorical)
+  - `ARC-Challenge` (categorical)
+  - `MMLU` (categorical)
+  - `GSM8K` (generative)
+  - `HumanEval` (generative)
+  - `SpellingBee` (generative)
+</ParamField>
+
+### Model Selection
+
+<ParamField path="-g, --model-tag" type="str" default="None">
+  Model tag to load (e.g. `d24`).
+</ParamField>
+
+<ParamField path="-s, --step" type="int" default="None">
+  Step to load. If not specified, loads the last checkpoint.
+</ParamField>
+
+### Generation Parameters
+
+<ParamField path="-d, --dtype" type="str" default="bfloat16">
+  Floating point precision: `float32` or `bfloat16`.
+</ParamField>
+
+<ParamField path="-t, --temperature" type="float" default="0.0">
+  Sampling temperature. `0.0` = greedy decoding.
+</ParamField>
+
+<ParamField path="-m, --max-new-tokens" type="int" default="512">
+  Maximum number of new tokens to generate.
+</ParamField>
+
+<ParamField path="-n, --num-samples" type="int" default="1">
+  Number of samples to generate per problem (for pass@k evaluation).
+</ParamField>
+
+<ParamField path="-k, --top-k" type="int" default="50">
+  Top-k sampling. `0` = disabled.
+</ParamField>
+
+### Batch Size
+
+<ParamField path="-b, --batch-size" type="int" default="8">
+  Batch size for categorical evaluation (logit-based tasks).
+</ParamField>
+
+### Limits
+
+<ParamField path="-x, --max-problems" type="int" default="None">
+  Maximum number of problems to evaluate. If not specified, evaluates all problems.
+</ParamField>
+
+### Runtime
+
+<ParamField path="--device-type" type="str" default="">
+  Device type: `cuda`, `cpu`, or `mps`. Empty string enables autodetection.
+</ParamField>
+
+## Evaluation Types
+
+### Categorical Tasks
+
+For multiple-choice tasks (ARC-Easy, ARC-Challenge, MMLU):
+- Processes batches of problems in parallel
+- Compares logits for answer choices (A, B, C, D)
+- No generation required (more efficient)
+
+### Generative Tasks
+
+For open-ended tasks (GSM8K, HumanEval, SpellingBee):
+- Generates completions for each problem
+- Evaluates correctness using task-specific criteria
+- Supports pass@k evaluation with multiple samples
+
+## Examples
+
+### Evaluate SFT Model on MMLU
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.chat_eval \
+  -i sft \
+  -a MMLU \
+  --model-tag d24
+```
+
+### Evaluate RL Model on GSM8K with Pass@8
+
+```bash
+python -m scripts.chat_eval \
+  -i rl \
+  -a GSM8K \
+  --model-tag d24 \
+  -n 8 \
+  -t 1.0
+```
+
+### Quick Evaluation (100 problems)
+
+```bash
+python -m scripts.chat_eval \
+  -i sft \
+  -a HumanEval \
+  --max-problems 100
+```
+
+### Evaluate All Tasks
+
+```bash
+torchrun --nproc_per_node=8 -m scripts.chat_eval \
+  -i sft \
+  --model-tag d24
+```
+
+### High Temperature Sampling
+
+```bash
+python -m scripts.chat_eval \
+  -i rl \
+  -a GSM8K \
+  -t 1.5 \
+  -k 100 \
+  -n 16
+```
+
+## ChatCORE Metric
+
+When all tasks are evaluated, the script computes the ChatCORE metric:
+
+```
+centered_accuracy = (accuracy - baseline) / (1.0 - baseline)
+chatcore_metric = mean(centered_accuracy for all tasks)
+```
+
+**Baselines:**
+- Categorical tasks (ARC, MMLU): 25% (random guessing)
+- Generative tasks (GSM8K, HumanEval, SpellingBee): 0%
+
+The ChatCORE metric ranges from 0 (random performance) to 1 (perfect performance).
+
+## Output
+
+Results are logged to:
+- **Console**: Real-time progress and final accuracy
+- **Report**: Nanochat report system with all task results
+- **Wandb**: If configured (not in this script, but in training scripts)

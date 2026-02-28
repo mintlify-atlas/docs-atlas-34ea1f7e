@@ -1,0 +1,352 @@
+---
+title: 'Tokenizing Data Loader'
+description: 'Distributed data loader with BOS-aligned best-fit document packing'
+---
+
+## Overview
+
+The nanochat data loader implements a **BOS-aligned best-fit** algorithm for packing tokenized documents into training sequences. This approach:
+
+- Ensures every sequence starts with a BOS (beginning-of-sequence) token
+- Uses best-fit packing to minimize wasted tokens
+- Achieves 100% utilization (no padding)
+- Handles distributed training with DDP sharding
+- Supports resumption from checkpoints
+
+## Design Trade-offs
+
+### BOS-Aligned Best-Fit
+
+**Advantages**:
+- Every token can attend back to a BOS token
+- Full document context is preserved for most tokens
+- Cleaner training signal (less confusion from concatenated documents)
+
+**Cost**:
+- ~35% of tokens are cropped to maintain alignment
+- More aggressive than simple concatenation
+
+Reference: dataloader.py:4-16
+
+### Alternative: Simple Concatenation
+
+For limited data or very long documents, consider the original tokenizing_distributed_data_loader that concatenates documents without BOS alignment:
+
+https://github.com/karpathy/nanochat/blob/3c3a3d7/nanochat/dataloader.py#L78-L117
+
+This approach wastes fewer tokens but produces more "confusing" examples where context switches abruptly.
+
+## Algorithm
+
+### Best-Fit Packing
+
+For each sequence of length `T+1` (input + target):
+
+1. **Find best fit**: From a buffer of documents, select the **largest** document that fits entirely in remaining space
+2. **Repeat**: Continue adding documents until no document fits
+3. **Fill remaining**: When nothing fits, crop a document (shortest in buffer) to fill remaining space exactly
+
+This is a greedy approximation to the bin-packing problem, optimized for simplicity and speed.
+
+Reference: dataloader.py:85-94
+
+### Pseudocode
+
+```python
+for each row in batch:
+    pos = 0
+    while pos < sequence_length:
+        # Find largest doc that fits
+        best_doc = max(doc for doc in buffer if len(doc) <= remaining)
+        
+        if best_doc exists:
+            row[pos:pos+len(best_doc)] = best_doc
+            pos += len(best_doc)
+        else:
+            # Crop shortest doc to fill exactly
+            shortest_doc = min(buffer, key=len)
+            row[pos:] = shortest_doc[:remaining]
+            pos = sequence_length
+```
+
+Reference: dataloader.py:122-150
+
+## Implementation Details
+
+### Function Signature
+
+```python
+def tokenizing_distributed_data_loader_with_state_bos_bestfit(
+    tokenizer,           # Tokenizer instance
+    B,                   # Batch size
+    T,                   # Sequence length
+    split,               # "train" or "val"
+    tokenizer_threads=4, # Parallel tokenization threads
+    tokenizer_batch_size=128,
+    device="cuda",
+    resume_state_dict=None,  # For resuming from checkpoint
+    buffer_size=1000,    # Document buffer size for best-fit
+):
+```
+
+Reference: dataloader.py:73-78
+
+### DDP Sharding
+
+Each rank processes a disjoint subset of the data:
+
+```python
+# Each rank reads different row groups
+rg_idx = ddp_rank  # Start offset
+while rg_idx < num_row_groups:
+    process(rg_idx)
+    rg_idx += ddp_world_size  # Stride by world size
+```
+
+This ensures:
+- No data duplication across ranks
+- Balanced load (assuming row groups are similar size)
+- Simple implementation (no explicit coordination)
+
+Reference: dataloader.py:61-67
+
+### Resumption
+
+The loader tracks position in the dataset and returns it with each batch:
+
+```python
+for inputs, targets, state_dict in loader:
+    # state_dict = {"pq_idx": ..., "rg_idx": ..., "epoch": ...}
+    train_step(inputs, targets)
+    if checkpoint:
+        save(state_dict)
+```
+
+When resuming:
+
+```python
+state = load_checkpoint()["dataloader_state"]
+loader = dataloader(..., resume_state_dict=state)
+```
+
+- `pq_idx`: Current parquet file index
+- `rg_idx`: Current row group index within file
+- `epoch`: Number of complete passes through dataset
+
+The loader advances by 1 row group on resume to avoid repeating data.
+
+Reference: dataloader.py:39-59, dataloader.py:156
+
+### Multi-Epoch Support
+
+The loader automatically cycles through the dataset infinitely:
+
+```python
+while True:  # Multi-epoch loop
+    for pq_file in parquet_files:
+        for row_group in pq_file:
+            yield batch
+    epoch += 1  # Track epoch count
+```
+
+Reference: dataloader.py:46-70
+
+## Memory Optimization
+
+### Pre-allocated Buffers
+
+The loader uses persistent buffers to avoid repeated allocations:
+
+```python
+# Allocate once at initialization
+row_buffer = torch.empty((B, T+1), dtype=torch.long)
+cpu_buffer = torch.empty(2*B*T, dtype=torch.long, pin_memory=True)
+gpu_buffer = torch.empty(2*B*T, dtype=torch.long, device="cuda")
+
+# Views into buffers
+cpu_inputs = cpu_buffer[:B*T].view(B, T)
+cpu_targets = cpu_buffer[B*T:].view(B, T)
+```
+
+This enables:
+- Zero-copy views into contiguous memory
+- Single HtoD transfer per batch
+- Pinned memory for async transfer
+
+Reference: dataloader.py:110-119
+
+### Transfer Pipeline
+
+```python
+# 1. Build batch in row_buffer (CPU)
+for row in range(B):
+    pack_documents_into_row(row_buffer[row])
+
+# 2. Copy to pinned CPU buffer (inputs and targets)
+cpu_inputs.copy_(row_buffer[:, :-1])
+cpu_targets.copy_(row_buffer[:, 1:])
+
+# 3. Single async HtoD transfer
+gpu_buffer.copy_(cpu_buffer, non_blocking=True)
+
+# 4. Yield views into GPU buffer
+yield inputs, targets  # No copy, just views
+```
+
+Reference: dataloader.py:152-160
+
+## Document Buffer
+
+The best-fit algorithm maintains a buffer of tokenized documents:
+
+- **Size**: Configurable (default 1000 documents)
+- **Purpose**: Provide choices for best-fit selection
+- **Refill**: Automatically refills when buffer runs low
+
+```python
+doc_buffer = []  # List of token lists
+
+def refill_buffer():
+    doc_batch = next(parquet_iterator)
+    token_lists = tokenizer.encode(doc_batch, prepend=bos_token)
+    doc_buffer.extend(token_lists)
+```
+
+**Trade-off**: Larger buffer → better packing, but more memory usage and startup latency.
+
+Reference: dataloader.py:100-108, dataloader.py:125-127
+
+## Tokenization
+
+Documents are tokenized in parallel:
+
+```python
+token_lists = tokenizer.encode(
+    doc_batch,
+    prepend=bos_token,
+    num_threads=4
+)
+```
+
+- Batch size: 128 documents (default)
+- Threads: 4 (default)
+- BOS token prepended to every document
+
+Reference: dataloader.py:106
+
+## Data Format
+
+The loader expects parquet files with a `'text'` column:
+
+```python
+rg = parquet_file.read_row_group(rg_idx)
+batch = rg.column('text').to_pylist()  # List of strings
+```
+
+Files are discovered via `list_parquet_files()` which looks for `*.parquet` in the dataset directory.
+
+Reference: dataloader.py:35-36, dataloader.py:63-64
+
+## Split Logic
+
+Train/val split is determined by parquet file:
+
+```python
+parquet_paths = list_parquet_files()
+if split == "train":
+    parquet_paths = parquet_paths[:-1]  # All but last file
+else:  # "val"
+    parquet_paths = parquet_paths[-1:]  # Last file only
+```
+
+This assumes:
+- Validation data is small enough to fit in a single parquet file
+- Validation file is placed last in directory listing
+
+Reference: dataloader.py:37
+
+## Usage Example
+
+```python
+from nanochat.dataloader import tokenizing_distributed_data_loader_with_state_bos_bestfit
+from nanochat.tokenizer import Tokenizer
+
+tokenizer = Tokenizer("path/to/tokenizer.model")
+
+# Training
+train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(
+    tokenizer=tokenizer,
+    B=16,
+    T=2048,
+    split="train",
+    device="cuda",
+)
+
+for step, (inputs, targets, state) in enumerate(train_loader):
+    loss = model(inputs, targets)
+    loss.backward()
+    optimizer.step()
+    
+    if step % 1000 == 0:
+        checkpoint = {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "dataloader": state,
+        }
+        torch.save(checkpoint, f"checkpoint_{step}.pt")
+```
+
+## Validation Loader
+
+For validation, use the same loader with `split="val"`:
+
+```python
+val_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(
+    tokenizer=tokenizer,
+    B=16,
+    T=2048,
+    split="val",
+    device="cuda",
+)
+
+# Validation loop (no state saving needed)
+for inputs, targets, _ in itertools.islice(val_loader, 100):
+    with torch.no_grad():
+        loss = model(inputs, targets)
+        val_losses.append(loss.item())
+```
+
+## Simplified Interface
+
+For cases where you don't need state tracking:
+
+```python
+from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
+
+for inputs, targets in loader:
+    # No state_dict in output
+    train_step(inputs, targets)
+```
+
+Reference: dataloader.py:162-165
+
+## Performance Characteristics
+
+| Aspect | Value |
+|--------|-------|
+| Utilization | 100% (no padding) |
+| Token waste | ~35% (cropping) |
+| Buffer memory | ~1000 docs × avg_doc_len × 4 bytes |
+| HtoD transfers | 1 per batch |
+| DDP efficiency | Near-linear scaling |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="GPT Architecture" icon="brain" href="/architecture/gpt-model">
+    Model architecture overview
+  </Card>
+  <Card title="Optimizer" icon="gauge" href="/architecture/optimizer">
+    MuonAdamW optimizer details
+  </Card>
+</CardGroup>

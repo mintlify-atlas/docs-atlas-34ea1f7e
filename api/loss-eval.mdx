@@ -1,0 +1,128 @@
+---
+title: Loss Evaluation
+description: Evaluate model performance using bits per byte metric
+---
+
+## Overview
+
+The `nanochat.loss_eval` module provides the `evaluate_bpb` function for evaluating language model performance using the bits per byte (bpb) metric.
+
+## evaluate_bpb
+
+Evaluate model using bits per byte metric.
+
+```python
+@torch.no_grad()
+def evaluate_bpb(
+    model: GPT,
+    batches: Iterator,
+    steps: int,
+    token_bytes: torch.Tensor
+) -> float
+```
+
+### Parameters
+
+<ParamField path="model" type="GPT" required>
+  The language model to evaluate
+</ParamField>
+
+<ParamField path="batches" type="Iterator" required>
+  Iterator that yields (x, y) tuples where:
+  - `x` is input tensor of shape (B, T)
+  - `y` is target tensor of shape (B, T)
+</ParamField>
+
+<ParamField path="steps" type="int" required>
+  Number of evaluation steps (batches to process)
+</ParamField>
+
+<ParamField path="token_bytes" type="torch.Tensor" required>
+  1D tensor of shape (vocab_size,) indicating the number of bytes for each token ID.
+  
+  Set to 0 for special tokens that should not be counted in the metric.
+</ParamField>
+
+### Returns
+
+<ResponseField name="bpb" type="float">
+  Bits per byte metric. Returns `float('inf')` if total bytes is 0.
+</ResponseField>
+
+### Description
+
+The bits per byte (bpb) metric is a tokenization vocab size-independent metric for evaluating language models. Unlike mean loss, bpb normalizes by the number of bytes that target tokens represent, making it comparable across different tokenizers and vocabulary sizes.
+
+**Key features:**
+
+1. **Normal tokens**: Weighted by their length in bytes
+2. **Special tokens**: Excluded from the metric (set `token_bytes[id] = 0`)
+3. **Masked tokens**: Tokens with negative IDs (e.g., -1 ignore_index) are excluded
+4. **Distributed support**: Automatically aggregates results across all ranks
+
+### Formula
+
+```
+bpb = total_nats / (log(2) * total_bytes)
+```
+
+Where:
+- `total_nats` = sum of cross-entropy losses weighted by byte length
+- `total_bytes` = sum of byte lengths for all target tokens
+
+### Example
+
+```python
+import torch
+from nanochat.loss_eval import evaluate_bpb
+from nanochat.tokenizer import get_tokenizer
+
+# Get tokenizer and build token_bytes tensor
+tokenizer = get_tokenizer()
+vocab_size = tokenizer.get_vocab_size()
+token_bytes = torch.zeros(vocab_size, dtype=torch.int64)
+
+# Map each token to its byte length
+for token_id in range(vocab_size):
+    token_str = tokenizer.decode([token_id])
+    # Set to 0 for special tokens, otherwise use byte length
+    if token_id not in tokenizer.special_token_ids:
+        token_bytes[token_id] = len(token_str.encode('utf-8'))
+
+token_bytes = token_bytes.to(device)
+
+# Evaluate model
+model.eval()
+bpb = evaluate_bpb(
+    model=model,
+    batches=val_dataloader,
+    steps=100,
+    token_bytes=token_bytes
+)
+
+print(f"Validation BPB: {bpb:.4f}")
+```
+
+### Implementation Details
+
+**Handling ignore_index:**
+
+When target tokens contain negative values (e.g., padding marked with -1):
+1. Create a valid mask: `valid = y >= 0`
+2. Replace negative indices with 0 before indexing `token_bytes`
+3. Zero out byte counts for invalid positions
+4. Only sum losses where `num_bytes > 0`
+
+**Distributed evaluation:**
+
+If running with multiple processes:
+1. Each rank accumulates `total_nats` and `total_bytes`
+2. `all_reduce` sums across all ranks
+3. Final bpb is computed from the global totals
+
+### Notes
+
+- Model must implement `model(x, y, loss_reduction='none')` returning shape (B, T)
+- Works with any device (CUDA, CPU, MPS)
+- Handles edge case where `total_bytes == 0` by returning infinity
+- More reliable than mean loss when comparing models with different tokenizers
