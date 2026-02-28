@@ -1,0 +1,163 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "nanochat",
+  "projectDescription": "Minimal experimental harness for training compute-optimal LLMs from tokenization to chat UI on a single GPU node.",
+  "theme": "aspen",
+  "primaryColor": "#6366F1",
+  "lightColor": "#818CF8",
+  "darkColor": "#4F46E5",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Training",
+            "pages": [
+              "training/tokenization",
+              "training/pretraining",
+              "training/supervised-finetuning",
+              "training/reinforcement-learning",
+              "training/scaling-laws"
+            ]
+          },
+          {
+            "group": "Evaluation",
+            "pages": [
+              "evaluation/core-metric",
+              "evaluation/loss-evaluation",
+              "evaluation/tasks"
+            ]
+          },
+          {
+            "group": "Inference",
+            "pages": [
+              "inference/chat-cli",
+              "inference/chat-web",
+              "inference/engine"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/gpt-model",
+              "architecture/optimizer",
+              "architecture/dataloader",
+              "architecture/flash-attention"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/fp8-training",
+              "advanced/distributed-training",
+              "advanced/checkpoint-management",
+              "advanced/custom-identity"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Modules",
+            "pages": [
+              "api/gpt",
+              "api/tokenizer",
+              "api/engine",
+              "api/dataloader"
+            ]
+          },
+          {
+            "group": "Training",
+            "pages": [
+              "api/optim",
+              "api/checkpoint-manager",
+              "api/loss-eval",
+              "api/core-eval"
+            ]
+          },
+          {
+            "group": "Scripts",
+            "pages": [
+              "api/base-train",
+              "api/base-eval",
+              "api/chat-sft",
+              "api/chat-rl",
+              "api/chat-eval"
+            ]
+          },
+          {
+            "group": "Tasks",
+            "pages": [
+              "api/tasks"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Community",
+        "groups": [
+          {
+            "group": "Resources",
+            "pages": [
+              "community/leaderboard",
+              "community/contributing",
+              "community/guides"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Complete LLM training pipeline from tokenization to chat UI",
+    "Compute-optimal model training with automatic hyperparameter scaling",
+    "GPT-2 capability training for under $100 on 8xH100",
+    "FP8 training support for Hopper+ GPUs",
+    "Flash Attention 3 integration",
+    "Distributed training with torchrun",
+    "DCLM CORE metric evaluation",
+    "Multiple evaluation tasks (ARC, MMLU, GSM8K, HumanEval)",
+    "ChatGPT-like web UI and CLI chat interfaces",
+    "BPE tokenizer training",
+    "Supervised fine-tuning (SFT) and reinforcement learning (RL)",
+    "Minimal, hackable codebase designed for research"
+  ],
+  "publicApiSurface": [
+    "GPT - Transformer model with rotary embeddings, QK norm, and GQA",
+    "GPTConfig - Model configuration dataclass",
+    "Engine - Efficient inference with KV cache",
+    "get_tokenizer - BPE tokenizer wrapper",
+    "MuonAdamW - Muon optimizer for matrix parameters",
+    "DistMuonAdamW - Distributed Muon optimizer",
+    "save_checkpoint - Save model checkpoints",
+    "load_checkpoint - Load model checkpoints",
+    "evaluate_bpb - Evaluate bits per byte",
+    "evaluate_core - Evaluate DCLM CORE metric",
+    "tokenizing_distributed_data_loader_bos_bestfit - Distributed data loader",
+    "scripts.base_train - Pretrain base model",
+    "scripts.base_eval - Evaluate base model",
+    "scripts.chat_sft - Supervised fine-tuning",
+    "scripts.chat_rl - Reinforcement learning",
+    "scripts.chat_eval - Evaluate chat model",
+    "scripts.chat_cli - CLI chat interface",
+    "scripts.chat_web - Web chat interface",
+    "scripts.tok_train - Train tokenizer",
+    "scripts.tok_eval - Evaluate tokenizer",
+    "tasks.arc - ARC evaluation task",
+    "tasks.mmlu - MMLU evaluation task",
+    "tasks.gsm8k - GSM8K evaluation task",
+    "tasks.humaneval - Python coding evaluation task",
+    "tasks.smoltalk - SmolTalk dataset task",
+    "tasks.spellingbee - Spelling/counting task"
+  ]
+}
