@@ -61,19 +61,28 @@ text = tokenizer.decode(token_ids)
 
 ## get_token_bytes
 
-Calculates the average number of bytes per token for a dataset.
+Returns a tensor containing the byte length of each token's UTF-8 encoding.
 
 ```python
 from nanochat.tokenizer import get_token_bytes
 
-avg_bytes = get_token_bytes(tokenizer)
+token_bytes = get_token_bytes(device="cpu")
+# token_bytes is a tensor of shape (vocab_size,)
+# Each element is the number of bytes for that token
+
+# Calculate average
+avg_bytes = token_bytes.float().mean().item()
 print(f"Average bytes per token: {avg_bytes:.3f}")
 ```
 
 This metric is used for bits-per-byte evaluation. A well-trained tokenizer typically achieves ~3-4 bytes per token.
 
-<ResponseField name="avg_bytes" type="float">
-  Average number of bytes encoded per token
+<ParamField path="device" type="str" default="cpu">
+  Device to load the token bytes tensor on ("cpu", "cuda", etc.)
+</ParamField>
+
+<ResponseField name="token_bytes" type="torch.Tensor">
+  Tensor of shape `(vocab_size,)` containing byte counts for each token
 </ResponseField>
 
 ## Tokenizer Configuration

@@ -5,7 +5,7 @@ description: Efficient inference engine with KV cache for autoregressive generat
 
 ## Overview
 
-The `Engine` class provides an efficient interface for autoregressive text generation with KV caching.
+The `Engine` class provides an efficient interface for autoregressive token generation with KV caching and tool use support.
 
 ## Engine Class
 
@@ -13,9 +13,10 @@ The `Engine` class provides an efficient interface for autoregressive text gener
 from nanochat.engine import Engine
 from nanochat.gpt import GPT
 from nanochat.tokenizer import get_tokenizer
+from nanochat.checkpoint_manager import load_model
 
 # Load model and tokenizer
-model = GPT.from_pretrained("path/to/checkpoint")
+model = load_model("~/.cache/nanochat/checkpoints/d26_sft")
 tokenizer = get_tokenizer()
 
 # Create engine
@@ -29,195 +30,268 @@ engine = Engine(model, tokenizer)
 </ParamField>
 
 <ParamField path="tokenizer" type="object" required>
-  Tokenizer instance with `encode()` and `decode()` methods
+  Tokenizer instance with `encode()`, `decode()`, and `encode_special()` methods (needed for tool use)
 </ParamField>
 
-## Generation Methods
+## Generation Method
 
 ### generate()
 
-Generates text from a prompt using autoregressive sampling.
+Generator that yields tokens one at a time for autoregressive generation.
 
 ```python
-prompt = "The quick brown fox"
-response = engine.generate(
-    prompt,
+# Tokenize input
+tokens = tokenizer.encode("The quick brown fox")
+
+# Generate tokens
+for token_column, token_masks in engine.generate(
+    tokens,
+    num_samples=1,
     max_tokens=100,
     temperature=1.0,
-    top_p=0.9,
-    stop_tokens=["<|end|>", "<|endoftext|>"]
-)
-print(response)
+    top_k=None,
+    seed=42
+):
+    token = token_column[0]  # Extract from batch dimension
+    token_text = tokenizer.decode([token])
+    print(token_text, end="", flush=True)
 ```
 
-<ParamField path="prompt" type="str" required>
-  Input text prompt to continue from
+<ParamField path="tokens" type="list[int]" required>
+  Input token IDs as a list of integers. Must be pre-tokenized.
 </ParamField>
 
-<ParamField path="max_tokens" type="int" default="512">
-  Maximum number of tokens to generate
+<ParamField path="num_samples" type="int" default="1">
+  Number of parallel samples to generate. Uses KV cache cloning for efficiency.
+</ParamField>
+
+<ParamField path="max_tokens" type="int" default="None">
+  Maximum number of tokens to generate. If None, generates until model outputs end token or reaches context limit.
 </ParamField>
 
 <ParamField path="temperature" type="float" default="1.0">
-  Sampling temperature. Higher values (e.g., 1.5) make output more random, lower values (e.g., 0.7) more deterministic.
+  Sampling temperature. Higher values (e.g., 1.5) make output more random, lower values (e.g., 0.7) more deterministic. Set to 0.0 for greedy decoding.
 </ParamField>
 
-<ParamField path="top_p" type="float" default="1.0">
-  Nucleus sampling threshold. Only sample from tokens whose cumulative probability mass is in the top-p.
+<ParamField path="top_k" type="int" default="None">
+  If set, only sample from the top-k most likely tokens. None means no top-k filtering.
 </ParamField>
 
-<ParamField path="stop_tokens" type="list[str]">
-  List of tokens that stop generation when encountered
+<ParamField path="seed" type="int" default="42">
+  Random seed for reproducible generation
 </ParamField>
 
-<ResponseField name="response" type="str">
-  Generated text completion
+### Yields
+
+The generator yields `(token_column, token_masks)` tuples:
+
+<ResponseField name="token_column" type="list[int]">
+  List of length `num_samples` containing the next token ID for each sample
 </ResponseField>
 
-### chat()
-
-Generates a chat response from conversation history.
-
-```python
-messages = [
-    {"role": "user", "content": "What is the capital of France?"},
-]
-
-response = engine.chat(
-    messages,
-    max_tokens=256,
-    temperature=0.8
-)
-print(response)
-```
-
-<ParamField path="messages" type="list[dict]" required>
-  List of message dictionaries with `role` ("user" or "assistant") and `content` fields
-</ParamField>
-
-<ParamField path="max_tokens" type="int" default="512">
-  Maximum tokens to generate in the response
-</ParamField>
-
-<ParamField path="temperature" type="float" default="1.0">
-  Sampling temperature
-</ParamField>
-
-<ParamField path="top_p" type="float" default="1.0">
-  Nucleus sampling threshold
-</ParamField>
-
-<ResponseField name="response" type="str">
-  Generated assistant response
+<ResponseField name="token_masks" type="list[int]">
+  List of length `num_samples` with values:
+  - `1` if token was sampled from the model
+  - `0` if token was forced (e.g., tool use output)
 </ResponseField>
+
+### Tool Use
+
+The engine automatically detects and executes Python expressions in tool blocks:
+
+1. When model generates `<|python_start|>`, enters tool mode
+2. Collects tokens until `<|python_end|>`
+3. Evaluates the Python expression safely
+4. Forces `<|output_start|>result<|output_end|>` tokens
+
+**Supported expressions:**
+- Basic arithmetic: `2 + 2`, `10 * 5`
+- String methods: `'strawberry'.count('r')`
+
+**Safety features:**
+- 3-second timeout per expression
+- No dangerous operations (import, exec, eval, file access)
+- Limited character set for string operations
 
 ## KV Cache
 
-The engine automatically manages a key-value cache to avoid recomputing attention for previously processed tokens.
+The engine automatically manages a key-value cache for efficient generation:
+
+<Steps>
+  <Step title="Prefill phase">
+    Processes input tokens in a single forward pass with batch size 1
+  </Step>
+  <Step title="Clone cache">
+    Replicates the KV cache for `num_samples` parallel generations
+  </Step>
+  <Step title="Decode loop">
+    Generates one token at a time, updating the cache incrementally
+  </Step>
+</Steps>
 
 ### Benefits
 
 <CardGroup cols={2}>
   <Card title="Speed" icon="gauge-high">
-    Dramatically faster generation by caching past key/value states
+    Dramatically faster by caching past key/value states
   </Card>
-  <Card title="Memory Efficient" icon="memory">
+  <Card title="Efficient Sampling" icon="clone">
+    Clone cache once for multiple parallel samples
+  </Card>
+  <Card title="Memory Optimized" icon="memory">
     Only stores compressed KV states, not full activations
   </Card>
-  <Card title="Automatic" icon="wand-magic-sparkles">
-    Engine handles cache management transparently
-  </Card>
-  <Card title="GQA Optimized" icon="layer-group">
-    Works efficiently with Group-Query Attention
+  <Card title="Flash Attention 3" icon="bolt">
+    Optimized for FA3's flash_attn_with_kvcache API
   </Card>
 </CardGroup>
 
 ### Cache Structure
 
-The KV cache is a dictionary mapping layer indices to cached key and value tensors:
-
-```python
-kv_cache = {
-    0: {"k": k_tensor, "v": v_tensor},  # Layer 0
-    1: {"k": k_tensor, "v": v_tensor},  # Layer 1
-    # ...
-}
-```
-
-Each cached tensor has shape:
+The KVCache stores tensors in Flash Attention 3's native `(B, T, H, D)` layout:
 - Keys: `(batch_size, seq_len, n_kv_head, head_dim)`
 - Values: `(batch_size, seq_len, n_kv_head, head_dim)`
 
-## Sampling Strategies
+Position tracking via `cache_seqlens` tensor allows FA3 to update cache in-place.
 
-### Temperature Sampling
+## Helper Functions
 
-Controls randomness of predictions:
+### sample_next_token()
 
-```python
-# More focused/deterministic (good for factual tasks)
-response = engine.generate(prompt, temperature=0.7)
-
-# More creative/diverse (good for creative writing)
-response = engine.generate(prompt, temperature=1.5)
-```
-
-### Nucleus (Top-p) Sampling
-
-Samples from the smallest set of tokens whose cumulative probability exceeds p:
+Samples the next token from logits:
 
 ```python
-# Only sample from top 90% probability mass
-response = engine.generate(prompt, top_p=0.9)
+from nanochat.engine import sample_next_token
+import torch
 
-# More conservative (top 50%)
-response = engine.generate(prompt, top_p=0.5)
+logits = torch.randn(4, 32768)  # (batch_size, vocab_size)
+rng = torch.Generator()
+rng.manual_seed(42)
+
+# Sample with temperature
+next_tokens = sample_next_token(logits, rng, temperature=0.8)
+
+# Greedy decoding
+next_tokens = sample_next_token(logits, rng, temperature=0.0)
+
+# Top-k sampling
+next_tokens = sample_next_token(logits, rng, temperature=1.0, top_k=50)
 ```
 
-### Combined Strategy
+<ParamField path="logits" type="torch.Tensor" required>
+  Logits tensor of shape `(B, vocab_size)`
+</ParamField>
 
-```python
-# Recommended settings for balanced output
-response = engine.generate(
-    prompt,
-    temperature=0.8,  # Slightly less random
-    top_p=0.95,       # Cut off unlikely tokens
-    max_tokens=512
-)
-```
+<ParamField path="rng" type="torch.Generator" required>
+  Random number generator for sampling
+</ParamField>
 
-## Usage Example
+<ParamField path="temperature" type="float" default="1.0">
+  Sampling temperature. 0.0 for greedy decoding.
+</ParamField>
+
+<ParamField path="top_k" type="int" default="None">
+  If set, only sample from top-k tokens
+</ParamField>
+
+## Usage Examples
+
+### Basic Generation
 
 ```python
 from nanochat.engine import Engine
-from nanochat.gpt import GPT
+from nanochat.checkpoint_manager import load_model
 from nanochat.tokenizer import get_tokenizer
 
-# Load checkpoint
-model = GPT.from_pretrained("~/.cache/nanochat/checkpoints/d26_sft")
+# Load
+model = load_model("~/.cache/nanochat/checkpoints/d26_sft")
 tokenizer = get_tokenizer()
-
-# Create engine
 engine = Engine(model, tokenizer)
 
-# Generate text
-text = engine.generate(
-    "Once upon a time",
+# Prepare input
+prompt = "Once upon a time"
+tokens = tokenizer.encode(prompt)
+
+# Generate
+response_tokens = []
+for token_column, token_masks in engine.generate(
+    tokens,
     max_tokens=200,
     temperature=1.0
-)
-print(text)
+):
+    token = token_column[0]
+    response_tokens.append(token)
+    print(tokenizer.decode([token]), end="", flush=True)
 
-# Chat conversation
-conversation = [
-    {"role": "user", "content": "Write a haiku about programming."}
-]
-response = engine.chat(conversation, temperature=0.9)
-print(response)
+print()
+```
+
+### Chat Conversation
+
+```python
+# Build conversation tokens manually
+bos = tokenizer.encode_special("<|bos|>")
+user_start = tokenizer.encode_special("<|user_start|>")
+user_end = tokenizer.encode_special("<|user_end|>")
+assistant_start = tokenizer.encode_special("<|assistant_start|>")
+assistant_end = tokenizer.encode_special("<|assistant_end|>")
+
+# Format: <|bos|><|user_start|>message<|user_end|><|assistant_start|>
+tokens = [bos, user_start]
+tokens.extend(tokenizer.encode("What is the capital of France?"))
+tokens.extend([user_end, assistant_start])
+
+# Generate response
+for token_column, _ in engine.generate(tokens, max_tokens=100):
+    token = token_column[0]
+    if token == assistant_end:
+        break
+    print(tokenizer.decode([token]), end="", flush=True)
+```
+
+### Multiple Samples
+
+```python
+# Generate 4 completions in parallel
+tokens = tokenizer.encode("The meaning of life is")
+
+samples = [[] for _ in range(4)]
+for token_column, token_masks in engine.generate(
+    tokens,
+    num_samples=4,
+    max_tokens=50,
+    temperature=1.2,
+    seed=42
+):
+    for i, token in enumerate(token_column):
+        samples[i].append(token)
+
+# Decode all samples
+for i, sample_tokens in enumerate(samples):
+    text = tokenizer.decode(sample_tokens)
+    print(f"Sample {i+1}: {text}")
+```
+
+### Tool Use
+
+```python
+# The model can use Python calculator
+tokens = tokenizer.encode("Calculate 15 * 8 = ")
+
+for token_column, token_masks in engine.generate(tokens, max_tokens=50):
+    token = token_column[0]
+    was_sampled = token_masks[0] == 1
+    
+    token_text = tokenizer.decode([token])
+    print(token_text, end="", flush=True)
+    
+    # Token mask shows whether this was sampled or forced by tool
+    if not was_sampled:
+        print(" [tool output]", end="")
 ```
 
 ## See Also
 
-- [Chat CLI](/inference/chat-cli) - Command-line chat interface
-- [Chat Web UI](/inference/chat-web) - Web-based chat interface
+- [Chat CLI](/inference/chat-cli) - Command-line interface using Engine
+- [Chat Web UI](/inference/chat-web) - Web-based interface using Engine
 - [GPT Model](/api/gpt) - Underlying model architecture
